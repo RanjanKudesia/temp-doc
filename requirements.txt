@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+beautifulsoup4
+lxml
+python-docx
+python-multipart
+pdf2docx
+pdfplumber
+python-pptx
+reportlab

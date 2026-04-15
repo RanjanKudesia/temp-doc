@@ -1,0 +1,17 @@
+"""pyrightconfig.json - Configuration for Pyright type checker."""{
+    "include": [
+        "app"
+    ],
+    "exclude": [
+        "**/node_modules",
+        "**/__pycache__",
+        ".venv",
+        "myvenv"
+    ],
+    "pythonVersion": "3.13",
+    "typeCheckingMode": "standard",
+    "reportGeneralTypeIssues": true,
+    "reportOptionalMemberAccess": true,
+    "reportOptionalSubscript": true,
+    "reportUnboundVariable": true
+}

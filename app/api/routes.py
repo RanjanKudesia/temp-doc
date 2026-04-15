@@ -1,0 +1,66 @@
+"""API routes for temp-doc service."""
+
+import logging
+from typing import Annotated
+
+from fastapi import APIRouter, UploadFile, Body, Response
+
+from app.helper.extract import extract_document
+from app.helper.generate import generate_document
+from app.helper.chunks import create_chunks
+from app.schemas.temp_doc_schema import (
+    ChunkResponse,
+    ExtractResponse,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+@router.post("/extract")
+async def extract_file(file: UploadFile) -> ExtractResponse:
+    """Extract document to JSON format.
+
+    - **file**: Document file (DOCX, PDF, PPTX, HTML, MD, TXT)
+
+    Returns extracted content in JSON format without storing media.
+    """
+    return await extract_document(file)
+
+
+@router.post("/generate")
+async def generate_file(request_body: Annotated[dict, Body(...)]) -> Response:
+    """Generate document from extracted JSON data.
+
+    - **output_format**: Target format (docx, pdf, pptx, html, markdown, text)
+    - **extracted_data**: Extracted document data in JSON format
+    - **file_name**: Optional base filename (without extension)
+    - **title**: Optional document title
+
+    This endpoint also accepts direct JSON copied from `/extract` response.
+    In that case, `extracted_data` is read from the payload and format defaults to `docx`
+    unless `output_format` or `target_format` is provided.
+
+    Returns the generated document file as binary data.
+    """
+    file_bytes, mime_type, file_name = await generate_document(request_body)
+
+    return Response(
+        content=file_bytes,
+        media_type=mime_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{file_name}"'
+        },
+    )
+
+
+@router.post("/chunks")
+async def chunks_endpoint(request_body: Annotated[dict, Body(...)]) -> ChunkResponse:
+    """Create meaningful chunks from extracted JSON.
+
+    Supports DOCX, PDF, Markdown, TXT, and PPTX extracted JSON.
+    Accepts the same payload shape as `/generate`, including direct paste of the
+    full `/extract` response.
+    """
+    return create_chunks(request_body)
