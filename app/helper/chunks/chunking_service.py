@@ -61,12 +61,10 @@ class ChunkingService:
             )
 
             if is_heading_only:
-                # Stack this heading as context for the next unit.
                 pending_prefix = unit.heading
                 continue
 
             if pending_prefix is not None:
-                # Prepend the orphaned parent heading so context flows down.
                 unit = _ChunkUnit(
                     heading=unit.heading,
                     parts=[pending_prefix] + unit.parts,
@@ -98,7 +96,6 @@ class ChunkingService:
                 para = paragraph_map.get(idx)
                 if para is None:
                     continue
-                # Skip title-style paragraphs — already captured in the slide header.
                 if self._is_heading(para):
                     continue
                 text = self._format_paragraph(para)
