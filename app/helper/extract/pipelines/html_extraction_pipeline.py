@@ -200,7 +200,7 @@ def _is_element_rtl(elem: Tag) -> bool:
 class _ExtractionState:
     """Holds mutable state for a single HTML extraction run."""
 
-    def __init__(self) -> None:
+    def __init__(self, include_media: bool = True) -> None:
         self.paragraphs: list[dict[str, Any]] = []
         self.tables: list[dict[str, Any]] = []
         self.media: list[dict[str, Any]] = []
@@ -209,6 +209,7 @@ class _ExtractionState:
         self.paragraph_index: int = 0
         self.table_index: int = 0
         self.media_index: int = 0
+        self.include_media: bool = include_media
 
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
@@ -230,7 +231,7 @@ class HtmlExtractionPipeline:
 
     # ── Public entry point ────────────────────────────────────────────────────
 
-    def run(self, file_bytes: bytes) -> dict[str, Any]:
+    def run(self, file_bytes: bytes, include_media: bool = True) -> dict[str, Any]:
         """Extract HTML and return JSON data."""
         try:
             html = file_bytes.decode("utf-8-sig", errors="replace")
@@ -240,7 +241,7 @@ class HtmlExtractionPipeline:
         soup = BeautifulSoup(html, "lxml")
         root = soup.body or soup
 
-        state = _ExtractionState()
+        state = _ExtractionState(include_media=include_media)
         self._walk(state, root)
 
         title_tag = soup.title
@@ -393,6 +394,8 @@ class HtmlExtractionPipeline:
     # ── Media ─────────────────────────────────────────────────────────────────
 
     def _add_media(self, state: _ExtractionState, image_elem: Tag) -> None:
+        if not state.include_media:
+            return
         src = (image_elem.get("src") or "").strip()
         if not src:
             return

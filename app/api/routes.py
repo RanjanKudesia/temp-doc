@@ -3,12 +3,12 @@
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, UploadFile, Body, Response
+from fastapi import APIRouter, UploadFile, Body, Query, Response
 
-from app.helper.extract import extract_document
-from app.helper.generate import generate_document
-from app.helper.chunks import create_chunks
-from app.schemas.temp_doc_schema import (
+from ..helper.extract import extract_document
+from ..helper.generate import generate_document
+from ..helper.chunks import create_chunks
+from ..schemas.temp_doc_schema import (
     ChunkResponse,
     ExtractResponse,
 )
@@ -19,14 +19,21 @@ router = APIRouter()
 
 
 @router.post("/extract")
-async def extract_file(file: UploadFile) -> ExtractResponse:
+async def extract_file(
+    file: UploadFile,
+    include_media: Annotated[
+        bool,
+        Query(description="Include extracted media objects in the response."),
+    ] = True,
+) -> ExtractResponse:
     """Extract document to JSON format.
 
     - **file**: Document file (DOCX, PDF, PPTX, HTML, MD, TXT)
+    - **include_media**: Include media payload (images/assets) when true
 
-    Returns extracted content in JSON format without storing media.
+    Returns extracted content in JSON format.
     """
-    return await extract_document(file)
+    return await extract_document(file, include_media=include_media)
 
 
 @router.post("/generate")

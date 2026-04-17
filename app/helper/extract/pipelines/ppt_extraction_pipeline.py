@@ -12,6 +12,24 @@ class PptExtractionPipeline:
         self.pipeline = PptXmlExtractionPipeline()
 
     @staticmethod
+    def _strip_media_from_parsed_slides(
+        parsed_slides: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Return parsed slides with picture/media shapes removed."""
+        sanitized: list[dict[str, Any]] = []
+        for slide in parsed_slides:
+            shapes = slide.get("shapes", []) or []
+            non_media_shapes = [
+                shape for shape in shapes if shape.get("kind") != "picture"
+            ]
+            updated_slide = dict(slide)
+            updated_slide["shapes"] = non_media_shapes
+            updated_slide["shape_count"] = len(non_media_shapes)
+            updated_slide["image_count"] = 0
+            sanitized.append(updated_slide)
+        return sanitized
+
+    @staticmethod
     def _build_run_dict(run: dict[str, Any]) -> dict[str, Any]:
         """Build a run dictionary from raw run data."""
         return {
@@ -183,6 +201,7 @@ class PptExtractionPipeline:
         paragraphs: list[dict[str, Any]],
         document_order: list[dict[str, Any]],
         indices: dict[str, int],
+        include_media: bool,
     ) -> None:
         """Process a single shape and append to appropriate collections."""
         kind = shape.get("kind")
@@ -213,7 +232,7 @@ class PptExtractionPipeline:
             slides_data[len(slides_data) - 1][1].append(indices["table"])
             indices["table"] += 1
 
-        elif kind == "picture":
+        elif kind == "picture" and include_media:
             media_dict = self._build_media_dict(shape, slide_idx)
             media.append(media_dict)
             document_order.append(
@@ -222,7 +241,7 @@ class PptExtractionPipeline:
             slides_data[len(slides_data) - 1][2].append(indices["media"])
             indices["media"] += 1
 
-    def run(self, file_bytes: bytes) -> dict[str, Any]:
+    def run(self, file_bytes: bytes, include_media: bool = True) -> dict[str, Any]:
         """Extract PowerPoint and return JSON data compatible with PPT generation."""
         xml_payload, _ = self.pipeline.run(
             file_bytes=file_bytes,
@@ -230,6 +249,8 @@ class PptExtractionPipeline:
         )
 
         slides_in = xml_payload.get("parsed_slides", []) or []
+        if not include_media:
+            slides_in = self._strip_media_from_parsed_slides(slides_in)
 
         slides: list[dict[str, Any]] = []
         paragraphs: list[dict[str, Any]] = []
@@ -250,7 +271,7 @@ class PptExtractionPipeline:
             for shape in slide.get("shapes", []) or []:
                 self._process_shape(
                     shape, slide_idx, slides_data, tables, media,
-                    paragraphs, document_order, indices
+                    paragraphs, document_order, indices, include_media
                 )
 
             notes = slide.get("notes") or {}
@@ -308,7 +329,7 @@ class PptExtractionPipeline:
                 "presentation": xml_payload.get("presentation"),
                 "content_types": xml_payload.get("content_types"),
             },
-            "parsed_slides": xml_payload.get("parsed_slides", []),
+            "parsed_slides": slides_in,
         }
 
         return extracted

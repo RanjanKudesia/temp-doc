@@ -17,7 +17,7 @@ class PdfConversionPipeline:
         self.logger = logging.getLogger(__name__)
         self.docx_pipeline = DocxExtractionPipeline()
 
-    def run(self, file_bytes: bytes) -> dict[str, Any]:
+    def run(self, file_bytes: bytes, include_media: bool = True) -> dict[str, Any]:
         """Convert PDF to DOCX and extract."""
         try:
             # pdf2docx expects file paths, so use a temp workspace.
@@ -41,7 +41,10 @@ class PdfConversionPipeline:
                 docx_bytes = docx_path.read_bytes()
 
             # Extract from DOCX
-            return self.docx_pipeline.run(docx_bytes)
+            return self.docx_pipeline.run(
+                docx_bytes,
+                include_media=include_media,
+            )
 
         except Exception as e:
             self.logger.error("PDF conversion failed: %s", e)

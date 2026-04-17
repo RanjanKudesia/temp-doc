@@ -11,7 +11,7 @@ class MarkdownExtractionPipeline:
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
 
-    def run(self, file_bytes: bytes) -> dict[str, Any]:
+    def run(self, file_bytes: bytes, include_media: bool = True) -> dict[str, Any]:
         """Extract Markdown and return JSON data."""
         try:
             text = file_bytes.decode("utf-8-sig", errors="replace")
@@ -50,8 +50,9 @@ class MarkdownExtractionPipeline:
             block_lines, line_index = self._collect_paragraph_block(
                 lines, line_index, line)
             paragraph = self._build_paragraph(block_lines, paragraph_index)
-            media.extend(self._extract_inline_media(
-                block_lines, paragraph_index))
+            if include_media:
+                media.extend(self._extract_inline_media(
+                    block_lines, paragraph_index))
             paragraphs.append(paragraph)
             document_order.append(
                 {"type": "paragraph", "index": paragraph_index})

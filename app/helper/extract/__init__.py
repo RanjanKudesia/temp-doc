@@ -4,8 +4,8 @@ Usage (in a route):
     from app.helper.extract import extract_document
 
     @router.post("/extract")
-    async def extract_file(file: UploadFile) -> ExtractResponse:
-        return await extract_document(file)
+    async def extract_file(file: UploadFile, include_media: bool = True) -> ExtractResponse:
+        return await extract_document(file, include_media=include_media)
 """
 
 from __future__ import annotations
@@ -15,14 +15,14 @@ from pathlib import Path
 
 from fastapi import HTTPException, UploadFile, status
 
-from app.helper.extract.adapters import (
+from .adapters import (
     DocxJsonExtractionAdapter,
     HtmlJsonExtractionAdapter,
     MarkdownJsonExtractionAdapter,
     PptJsonExtractionAdapter,
     TextJsonExtractionAdapter,
 )
-from app.helper.extract.pipelines import (
+from .pipelines import (
     DocxExtractionPipeline,
     HtmlExtractionPipeline,
     MarkdownExtractionPipeline,
@@ -30,7 +30,11 @@ from app.helper.extract.pipelines import (
     PptExtractionPipeline,
     TextExtractionPipeline,
 )
-from app.schemas.temp_doc_schema import ExtractedData, ExtractedPptData, ExtractResponse
+from ...schemas.temp_doc_schema import (
+    ExtractedData,
+    ExtractedPptData,
+    ExtractResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +47,17 @@ _ppt_adapter = PptJsonExtractionAdapter(PptExtractionPipeline())
 _pdf = PdfConversionPipeline()
 
 
-async def extract_document(file: UploadFile) -> ExtractResponse:
+async def extract_document(
+    file: UploadFile,
+    include_media: bool = True,
+) -> ExtractResponse:
     """Extract any supported document file and return structured JSON.
 
     Supported formats: docx, pdf, pptx, html, htm, md, markdown, txt.
 
     Args:
         file: Uploaded file from a FastAPI route.
+        include_media: Include media payload (images/assets) when true.
 
     Returns:
         ExtractResponse with extension, output_format, and extracted_data.
@@ -84,26 +92,28 @@ async def extract_document(file: UploadFile) -> ExtractResponse:
     try:
         if extension == "docx":
             payload = ExtractedData.model_validate(
-                _docx_adapter.run(file_bytes))
+                _docx_adapter.run(file_bytes, include_media=include_media))
 
         elif extension == "pdf":
-            payload = ExtractedData.model_validate(_pdf.run(file_bytes))
+            payload = ExtractedData.model_validate(
+                _pdf.run(file_bytes, include_media=include_media)
+            )
 
         elif extension in ("ppt", "pptx"):
             payload = ExtractedPptData.model_validate(
-                _ppt_adapter.run(file_bytes))
+                _ppt_adapter.run(file_bytes, include_media=include_media))
 
         elif extension in ("html", "htm"):
             payload = ExtractedData.model_validate(
-                _html_adapter.run(file_bytes))
+                _html_adapter.run(file_bytes, include_media=include_media))
 
         elif extension in ("md", "markdown"):
             payload = ExtractedData.model_validate(
-                _markdown_adapter.run(file_bytes))
+                _markdown_adapter.run(file_bytes, include_media=include_media))
 
         elif extension == "txt":
             payload = ExtractedData.model_validate(
-                _text_adapter.run(file_bytes))
+                _text_adapter.run(file_bytes, include_media=include_media))
 
         else:
             raise HTTPException(

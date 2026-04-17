@@ -31,7 +31,7 @@ class DocxExtractionPipeline:
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
 
-    def run(self, file_bytes: bytes) -> dict[str, Any]:
+    def run(self, file_bytes: bytes, include_media: bool = True) -> dict[str, Any]:
         """Parse a DOCX byte stream and return extracted JSON payload."""
         if not is_zipfile(BytesIO(file_bytes)):
             raise ValueError(
@@ -43,12 +43,21 @@ class DocxExtractionPipeline:
             raise ValueError(
                 f"Failed to parse DOCX document: {str(e)}") from e
 
-        extracted = self._extract_document(document)
+        extracted = self._extract_document(
+            document, include_media=include_media)
         return extracted
 
-    def _extract_document(self, document: DocumentObject) -> dict[str, Any]:
+    def _extract_document(
+        self,
+        document: DocumentObject,
+        include_media: bool,
+    ) -> dict[str, Any]:
         """Extract all document content."""
-        media_index = self._extract_and_save_media(document, "temp-doc")
+        media_index = (
+            self._extract_and_save_media(document, "temp-doc")
+            if include_media
+            else {}
+        )
 
         paragraphs = [
             self._extract_paragraph(paragraph, index, document, media_index)

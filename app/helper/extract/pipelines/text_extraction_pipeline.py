@@ -86,8 +86,13 @@ class TextExtractionPipeline:
             "source": {"format": "txt"},
         }
 
-    def run(self, file_bytes: bytes) -> dict[str, Any]:
+    def run(
+        self,
+        file_bytes: bytes,
+        include_media: bool = True,
+    ) -> dict[str, Any]:
         """Extract plain text and return JSON data."""
+        _ = include_media
         try:
             text = file_bytes.decode("utf-8-sig", errors="replace")
         except Exception as e:
