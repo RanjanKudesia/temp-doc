@@ -11,7 +11,7 @@ from docx import Document
 from docx.document import Document as DocumentObject
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml.ns import qn
-from docx.table import _Cell, Table
+from docx.table import Table
 from docx.text.paragraph import Paragraph
 from docx.text.run import Run
 from lxml import etree
@@ -21,6 +21,8 @@ XML_NS = {
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
 }
+
+_W_VAL = "w:val"
 
 
 class DocxExtractionPipeline:
@@ -82,7 +84,9 @@ class DocxExtractionPipeline:
             "media": list(media_index.values()),
         }
 
-    def _extract_and_save_media(self, document: DocumentObject, output_basename: str) -> dict[str, dict[str, Any]]:
+    def _extract_and_save_media(
+        self, document: DocumentObject, output_basename: str
+    ) -> dict[str, dict[str, Any]]:
         """Extract embedded images and keep them in JSON as base64 payload."""
         media_index: dict[str, dict[str, Any]] = {}
 
@@ -168,19 +172,24 @@ class DocxExtractionPipeline:
 
             sz_elem = run_defaults.find("w:sz", XML_NS)
             if sz_elem is not None:
-                sz_val = sz_elem.get(qn("w:val"))
+                sz_val = sz_elem.get(qn(_W_VAL))
                 if sz_val is not None:
                     defaults["font_size_pt"] = int(sz_val) / 2.0
 
             color_elem = run_defaults.find("w:color", XML_NS)
             if color_elem is not None:
-                color_val = color_elem.get(qn("w:val"))
+                color_val = color_elem.get(qn(_W_VAL))
                 if color_val and color_val.lower() != "auto":
                     defaults["color_rgb"] = color_val.upper()
 
-        except (AttributeError, KeyError, ValueError, TypeError, etree.XMLSyntaxError) as e:
+        # type: ignore[attr-defined]
+        except (
+            AttributeError, KeyError, ValueError, TypeError,
+            # pylint: disable=c-extension-no-member
+            etree.XMLSyntaxError,
+        ) as e:
             self.logger.debug(
-                f"Failed to extract document defaults: {str(e)}")
+                "Failed to extract document defaults: %s", str(e))
 
         return defaults
 
@@ -209,14 +218,42 @@ class DocxExtractionPipeline:
                             "color_rgb": str(
                                 font.color.rgb) if font.color and font.color.rgb else None,
                         }
-                except Exception:
+                except (AttributeError, TypeError, ValueError, KeyError):
                     pass
 
                 styles.append(style_dict)
-        except Exception as e:
-            self.logger.debug(f"Failed to extract styles: {str(e)}")
+        except (AttributeError, KeyError, ValueError, TypeError, OSError) as e:
+            self.logger.debug("Failed to extract styles: %s", str(e))
 
         return styles
+
+    def _get_paragraph_list_info(self, paragraph: Paragraph) -> dict[str, Any] | None:
+        """Extract list/numbering info from a paragraph element."""
+        p_el = paragraph._element  # pylint: disable=protected-access
+        p_pr = p_el.pPr
+        num_pr = p_pr.numPr if p_pr is not None else None
+        if num_pr is None:
+            return None
+        num_id = num_pr.numId.val if num_pr.numId is not None else None
+        ilvl = num_pr.ilvl.val if num_pr.ilvl is not None else None
+        return {
+            "num_id": int(num_id) if num_id is not None else None,
+            "level": int(ilvl) if ilvl is not None else None,
+        }
+
+    def _get_list_format_flags(
+        self, style_name: str | None, numbering_format: str | None
+    ) -> tuple[bool, bool]:
+        """Return (is_bullet, is_numbered) derived from style name and numbering format."""
+        is_bullet = bool(style_name and "bullet" in style_name.lower())
+        is_numbered = bool(style_name and "number" in style_name.lower())
+        if numbering_format:
+            fmt = numbering_format.split(":", 1)[0].lower()
+            if fmt == "bullet":
+                is_bullet = True
+            else:
+                is_numbered = True
+        return is_bullet, is_numbered
 
     def _extract_paragraph(
         self,
@@ -229,34 +266,12 @@ class DocxExtractionPipeline:
         runs = [self._extract_run(run, i, media_index)
                 for i, run in enumerate(paragraph.runs)]
 
-        alignment = None
-        if paragraph.alignment is not None:
-            alignment = paragraph.alignment.name
-
-        paragraph_element = paragraph._element
-        p_pr = paragraph_element.pPr
-        num_pr = p_pr.numPr if p_pr is not None else None
-
-        list_info = None
-        if num_pr is not None:
-            num_id = num_pr.numId.val if num_pr.numId is not None else None
-            ilvl = num_pr.ilvl.val if num_pr.ilvl is not None else None
-            list_info = {
-                "num_id": int(num_id) if num_id is not None else None,
-                "level": int(ilvl) if ilvl is not None else None,
-            }
-
+        alignment = paragraph.alignment.name if paragraph.alignment is not None else None
+        list_info = self._get_paragraph_list_info(paragraph)
         style_name = paragraph.style.name if paragraph.style else None
         numbering_format = self._resolve_list_formatting(list_info, document)
-
-        is_bullet = bool(style_name and "bullet" in style_name.lower())
-        is_numbered = bool(style_name and "number" in style_name.lower())
-        if numbering_format:
-            fmt = numbering_format.split(":", 1)[0].lower()
-            if fmt in {"bullet"}:
-                is_bullet = True
-            else:
-                is_numbered = True
+        is_bullet, is_numbered = self._get_list_format_flags(
+            style_name, numbering_format)
 
         return {
             "index": index,
@@ -271,59 +286,73 @@ class DocxExtractionPipeline:
             "runs": runs,
         }
 
-    def _resolve_list_formatting(self, list_info: dict[str, Any] | None, document: DocumentObject) -> str | None:
+    def _find_abstract_num_id(self, root: Any, num_id: int) -> int | None:
+        """Return abstractNumId for a given numId, or None if not found."""
+        for num in root.findall("w:num", XML_NS):
+            if int(num.get(qn("w:numId")) or -1) == num_id:
+                abstract_elem = num.find("w:abstractNumId", XML_NS)
+                if abstract_elem is None:
+                    return None
+                abstract_id = int(abstract_elem.get(qn(_W_VAL)) or -1)
+                return abstract_id if abstract_id >= 0 else None
+        return None
+
+    def _extract_lvl_format(self, abs_num: Any, ilvl: int) -> str | None:
+        """Return format string for the matching level within an abstractNum element."""
+        for lvl in abs_num.findall("w:lvl", XML_NS):
+            if int(lvl.get(qn("w:ilvl")) or -1) != ilvl:
+                continue
+            num_fmt = lvl.find("w:numFmt", XML_NS)
+            lvl_text = lvl.find("w:lvlText", XML_NS)
+            if num_fmt is not None and lvl_text is not None:
+                fmt = num_fmt.get(qn(_W_VAL))
+                text = lvl_text.get(qn(_W_VAL))
+                if fmt and text:
+                    return f"{fmt}:{text}"
+            return None
+        return None
+
+    def _find_level_format(self, root: Any, abstract_id: int, ilvl: int) -> str | None:
+        """Return format string for a given abstractNumId and level, or None."""
+        for abs_num in root.findall("w:abstractNum", XML_NS):
+            if int(abs_num.get(qn("w:abstractNumId")) or -1) != abstract_id:
+                continue
+            return self._extract_lvl_format(abs_num, ilvl)
+        return None
+
+    def _resolve_list_formatting(
+        self, list_info: dict[str, Any] | None, document: DocumentObject
+    ) -> str | None:
         """Resolve abstract numbering format to human-readable list format."""
         if not list_info:
             return None
-
         num_id = list_info.get("num_id")
         ilvl = list_info.get("level") or 0
         if num_id is None:
             return None
-
         try:
             numbering_part = document.part.numbering_part
             if numbering_part is None:
                 return None
-
             root = numbering_part.element
-            for num in root.findall("w:num", XML_NS):
-                if int(num.get(qn("w:numId")) or -1) == num_id:
-                    abstract_elem = num.find("w:abstractNumId", XML_NS)
-                    if abstract_elem is None:
-                        return None
-                    abstract_id = int(abstract_elem.get(qn("w:val")) or -1)
-                    if abstract_id < 0:
-                        return None
-
-                    for abs_num in root.findall("w:abstractNum", XML_NS):
-                        if int(abs_num.get(qn("w:abstractNumId")) or -1) != abstract_id:
-                            continue
-                        for lvl in abs_num.findall("w:lvl", XML_NS):
-                            if int(lvl.get(qn("w:ilvl")) or -1) != ilvl:
-                                continue
-                            num_fmt = lvl.find("w:numFmt", XML_NS)
-                            lvl_text = lvl.find("w:lvlText", XML_NS)
-                            if num_fmt is not None and lvl_text is not None:
-                                fmt = num_fmt.get(qn("w:val"))
-                                text = lvl_text.get(qn("w:val"))
-                                if fmt and text:
-                                    return f"{fmt}:{text}"
-                            return None
-                    return None
+            abstract_id = self._find_abstract_num_id(root, num_id)
+            if abstract_id is None:
+                return None
+            return self._find_level_format(root, abstract_id, ilvl)
         except (AttributeError, ValueError, TypeError, KeyError):
             return None
 
-        return None
-
-    def _extract_run(self, run: Run, index: int, media_index: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    def _extract_run(
+        self, run: Run, index: int, media_index: dict[str, dict[str, Any]]
+    ) -> dict[str, Any]:
         """Extract text run with formatting."""
         text_color = None
         if run.font.color and run.font.color.rgb:
             text_color = str(run.font.color.rgb)
 
         embedded_media = []
-        drawing_blips = run._element.xpath(".//*[local-name()='blip']")
+        run_el = run._element  # pylint: disable=protected-access
+        drawing_blips = run_el.xpath(".//*[local-name()='blip']")
         for blip in drawing_blips:
             rel_id = blip.get(qn("r:embed"))
             if rel_id and rel_id in media_index:

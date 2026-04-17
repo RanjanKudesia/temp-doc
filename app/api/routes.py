@@ -39,12 +39,13 @@ async def generate_file(request_body: Annotated[dict, Body(...)]) -> Response:
     - **title**: Optional document title
 
     This endpoint also accepts direct JSON copied from `/extract` response.
-    In that case, `extracted_data` is read from the payload and format defaults to `docx`
-    unless `output_format` or `target_format` is provided.
+    In that case, `extracted_data` is read from the payload and format defaults to
+    the extracted `document_type` (for example `pptx`) unless `output_format` or
+    `target_format` is provided.
 
     Returns the generated document file as binary data.
     """
-    file_bytes, mime_type, file_name = await generate_document(request_body)
+    file_bytes, mime_type, file_name = generate_document(request_body)
 
     return Response(
         content=file_bytes,

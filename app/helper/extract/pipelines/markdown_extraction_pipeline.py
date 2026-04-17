@@ -36,77 +36,19 @@ class MarkdownExtractionPipeline:
                 line_index += 1
                 continue
 
-            # Markdown table
             if self._is_table_start(lines, line_index):
-                table_lines: list[str] = []
-                while line_index < len(lines) and self._looks_like_table_row(lines[line_index]):
-                    table_lines.append(lines[line_index])
-                    line_index += 1
-
-                table_rows = self._parse_table_lines(table_lines)
-                if table_rows:
-                    rows_payload: list[dict[str, Any]] = []
-                    max_cols = max((len(row) for row in table_rows), default=0)
-                    for row_idx, row in enumerate(table_rows):
-                        cells = []
-                        for col_idx, cell_text in enumerate(row):
-                            cells.append({
-                                "text": cell_text,
-                                "paragraphs": [{
-                                    "index": 0,
-                                    "text": cell_text,
-                                    "style": None,
-                                    "is_bullet": False,
-                                    "is_numbered": False,
-                                    "list_info": None,
-                                    "numbering_format": None,
-                                    "alignment": None,
-                                    "runs": [{
-                                        "index": 0,
-                                        "text": cell_text,
-                                        "bold": None,
-                                        "italic": None,
-                                        "underline": None,
-                                        "font_name": None,
-                                        "font_size_pt": None,
-                                        "color_rgb": None,
-                                        "highlight_color": None,
-                                        "hyperlink_url": None,
-                                        "embedded_media": [],
-                                    }],
-                                }],
-                                "tables": [],
-                                "cell_index": col_idx,
-                            })
-                        rows_payload.append(
-                            {"row_index": row_idx, "cells": cells})
-
-                    tables.append({
-                        "index": table_index,
-                        "row_count": len(rows_payload),
-                        "column_count": max_cols,
-                        "style": None,
-                        "rows": rows_payload,
-                        "source": {"format": "markdown"},
-                    })
+                table_lines, line_index = self._collect_table_lines(
+                    lines, line_index)
+                table_entry = self._build_table_entry(table_lines, table_index)
+                if table_entry:
+                    tables.append(table_entry)
                     document_order.append(
                         {"type": "table", "index": table_index})
                     table_index += 1
                 continue
 
-            # Aggregate block lines (heading/bullet/number are single-line; plain text may span multiple)
-            block_lines = [line]
-            line_index += 1
-            while line_index < len(lines):
-                next_line = lines[line_index]
-                next_stripped = next_line.strip()
-                if not next_stripped:
-                    break
-                if self._is_structural_line(next_line) or self._is_table_start(lines, line_index):
-                    break
-                block_lines.append(next_line)
-                line_index += 1
-
+            block_lines, line_index = self._collect_paragraph_block(
+                lines, line_index, line)
             paragraph = self._build_paragraph(block_lines, paragraph_index)
             media.extend(self._extract_inline_media(
                 block_lines, paragraph_index))
@@ -127,6 +69,90 @@ class MarkdownExtractionPipeline:
             "tables": tables,
             "media": media,
         }
+
+    def _collect_table_lines(
+        self, lines: list[str], line_index: int
+    ) -> tuple[list[str], int]:
+        """Collect contiguous table-row lines starting at line_index."""
+        table_lines: list[str] = []
+        while line_index < len(lines) and self._looks_like_table_row(lines[line_index]):
+            table_lines.append(lines[line_index])
+            line_index += 1
+        return table_lines, line_index
+
+    def _build_rows_payload(
+        self, table_rows: list[list[str]]
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Build row/cell payload from parsed table rows."""
+        rows_payload: list[dict[str, Any]] = []
+        max_cols = max((len(row) for row in table_rows), default=0)
+        for row_idx, row in enumerate(table_rows):
+            cells = []
+            for col_idx, cell_text in enumerate(row):
+                cells.append({
+                    "text": cell_text,
+                    "paragraphs": [{
+                        "index": 0,
+                        "text": cell_text,
+                        "style": None,
+                        "is_bullet": False,
+                        "is_numbered": False,
+                        "list_info": None,
+                        "numbering_format": None,
+                        "alignment": None,
+                        "runs": [{
+                            "index": 0,
+                            "text": cell_text,
+                            "bold": None,
+                            "italic": None,
+                            "underline": None,
+                            "font_name": None,
+                            "font_size_pt": None,
+                            "color_rgb": None,
+                            "highlight_color": None,
+                            "hyperlink_url": None,
+                            "embedded_media": [],
+                        }],
+                    }],
+                    "tables": [],
+                    "cell_index": col_idx,
+                })
+            rows_payload.append({"row_index": row_idx, "cells": cells})
+        return rows_payload, max_cols
+
+    def _build_table_entry(
+        self, table_lines: list[str], table_index: int
+    ) -> dict[str, Any] | None:
+        """Build a table dict from collected lines, or return None if empty."""
+        table_rows = self._parse_table_lines(table_lines)
+        if not table_rows:
+            return None
+        rows_payload, max_cols = self._build_rows_payload(table_rows)
+        return {
+            "index": table_index,
+            "row_count": len(rows_payload),
+            "column_count": max_cols,
+            "style": None,
+            "rows": rows_payload,
+            "source": {"format": "markdown"},
+        }
+
+    def _collect_paragraph_block(
+        self, lines: list[str], line_index: int, first_line: str
+    ) -> tuple[list[str], int]:
+        """Collect contiguous non-structural lines into a paragraph block."""
+        block_lines = [first_line]
+        line_index += 1
+        while line_index < len(lines):
+            next_line = lines[line_index]
+            next_stripped = next_line.strip()
+            if not next_stripped:
+                break
+            if self._is_structural_line(next_line) or self._is_table_start(lines, line_index):
+                break
+            block_lines.append(next_line)
+            line_index += 1
+        return block_lines, line_index
 
     # ── paragraph builder ────────────────────────────────────────────────────
 
@@ -158,6 +184,13 @@ class MarkdownExtractionPipeline:
         # Build inline-formatted runs from the text
         runs = self._parse_inline_runs(raw)
 
+        if is_bullet:
+            list_kind: str | None = "bullet"
+        elif is_numbered:
+            list_kind = "numbered"
+        else:
+            list_kind = None
+
         return {
             "index": paragraph_index,
             "text": raw,
@@ -165,7 +198,7 @@ class MarkdownExtractionPipeline:
             "is_bullet": is_bullet,
             "is_numbered": is_numbered,
             "list_info": {
-                "kind": "bullet" if is_bullet else ("numbered" if is_numbered else None),
+                "kind": list_kind,
                 "numbering_format": numbering_format,
             } if (is_bullet or is_numbered) else None,
             "numbering_format": numbering_format,
@@ -173,6 +206,30 @@ class MarkdownExtractionPipeline:
             "runs": runs,
             "source": {"format": "markdown"},
         }
+
+    def _classify_match(
+        self, m: re.Match
+    ) -> tuple[str | None, bool, bool, bool, str | None]:
+        """Return (run_text, bold, italic, is_code, url) for a regex match."""
+        bold = italic = is_code = False
+        url = None
+        run_text = None
+        if m.group("bi"):
+            run_text, bold, italic = m.group("bi"), True, True
+        elif m.group("b"):
+            run_text, bold = m.group("b"), True
+        elif m.group("b2"):
+            run_text, bold = m.group("b2"), True
+        elif m.group("i"):
+            run_text, italic = m.group("i"), True
+        elif m.group("code"):
+            run_text, is_code = m.group("code"), True
+        elif m.group("link_text"):
+            run_text = m.group("link_text")
+            url = m.group("link_url")
+        elif m.group("plain"):
+            run_text = m.group("plain")
+        return run_text, bold, italic, is_code, url
 
     def _parse_inline_runs(self, text: str) -> list[dict[str, Any]]:
         """Parse inline Markdown into styled runs (bold/italic/code/links)."""
@@ -189,36 +246,10 @@ class MarkdownExtractionPipeline:
             r")"
         )
         for m in pattern.finditer(text):
-            bold = italic = False
-            code = None
-            url = None
-            run_text = None
-
-            if m.group("bi"):
-                run_text = m.group("bi")
-                bold = italic = True
-            elif m.group("b"):
-                run_text = m.group("b")
-                bold = True
-            elif m.group("b2"):
-                run_text = m.group("b2")
-                bold = True
-            elif m.group("i"):
-                run_text = m.group("i")
-                italic = True
-            elif m.group("code"):
-                run_text = m.group("code")
-                code = True
-            elif m.group("link_text"):
-                run_text = m.group("link_text")
-                url = m.group("link_url")
-            elif m.group("plain"):
-                run_text = m.group("plain")
-
+            run_text, bold, italic, is_code, url = self._classify_match(m)
             if not run_text:
                 continue
-
-            runs.append({
+            run: dict[str, Any] = {
                 "index": len(runs),
                 "text": run_text,
                 "bold": bold or None,
@@ -230,8 +261,10 @@ class MarkdownExtractionPipeline:
                 "highlight_color": None,
                 "hyperlink_url": url,
                 "embedded_media": [],
-                **({"code": True} if code else {}),
-            })
+            }
+            if is_code:
+                run["code"] = True
+            runs.append(run)
 
         if not runs:
             runs.append({
@@ -250,7 +283,9 @@ class MarkdownExtractionPipeline:
 
         return runs
 
-    def _extract_inline_media(self, block_lines: list[str], paragraph_index: int) -> list[dict[str, Any]]:
+    def _extract_inline_media(
+        self, block_lines: list[str], paragraph_index: int
+    ) -> list[dict[str, Any]]:
         """Extract ![alt](src) image references from block lines."""
         media: list[dict[str, Any]] = []
         pattern = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<target>[^)\s]+)\)")

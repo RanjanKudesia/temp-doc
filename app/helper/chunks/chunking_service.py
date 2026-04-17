@@ -5,7 +5,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from app.schemas.temp_doc_schema import ExtractedData, ExtractedParagraph, ExtractedPptData, ExtractedTable
+from app.schemas.temp_doc_schema import (
+    ExtractedData,
+    ExtractedParagraph,
+    ExtractedPptData,
+    ExtractedTable,
+)
 
 _HEADING_RE = re.compile(r"heading\s*([1-6])", re.IGNORECASE)
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
@@ -86,88 +91,146 @@ class ChunkingService:
 
         chunks: list[str] = []
         for slide in extracted_data.slides:
+            parts = self._build_slide_parts(
+                slide, paragraph_map, table_map
+            )
             slide_num = slide.get("slide_number") or (
                 (slide.get("index") or 0) + 1)
             title = self._clean_text(slide.get("title"))
             header = f"Slide {slide_num}: {title}" if title else f"Slide {slide_num}"
-            parts: list[str] = [header]
-
-            for idx in slide.get("paragraph_indices") or []:
-                para = paragraph_map.get(idx)
-                if para is None:
-                    continue
-                if self._is_heading(para):
-                    continue
-                text = self._format_paragraph(para)
-                if text:
-                    parts.append(text)
-
-            for idx in slide.get("table_indices") or []:
-                table = table_map.get(idx)
-                if table is None:
-                    continue
-                table_text = self._format_table(table)
-                if table_text:
-                    parts.append(table_text)
-
-            notes = self._clean_text(slide.get("notes_text"))
-            if notes:
-                parts.append(f"Notes: {notes}")
 
             unit = _ChunkUnit(heading=header, parts=parts)
             chunks.extend(self._split_unit(unit))
 
         return chunks
 
+    def _build_slide_parts(
+        self,
+        slide: dict,
+        paragraph_map: dict,
+        table_map: dict,
+    ) -> list[str]:
+        """Build parts list for a single slide."""
+        parts: list[str] = []
+
+        for idx in slide.get("paragraph_indices") or []:
+            para = paragraph_map.get(idx)
+            if para is None:
+                continue
+            if self._is_heading(para):
+                continue
+            text = self._format_paragraph(para)
+            if text:
+                parts.append(text)
+
+        for idx in slide.get("table_indices") or []:
+            table = table_map.get(idx)
+            if table is None:
+                continue
+            table_text = self._format_table(table)
+            if table_text:
+                parts.append(table_text)
+
+        notes = self._clean_text(slide.get("notes_text"))
+        if notes:
+            parts.append(f"Notes: {notes}")
+
+        return parts
+
     def _build_docx_units(self, extracted_data: ExtractedData) -> list[_ChunkUnit]:
+        """Build units from DOCX extracted data by processing document order."""
         paragraph_map = {
             paragraph.index: paragraph for paragraph in extracted_data.paragraphs}
         table_map = {table.index: table for table in extracted_data.tables}
 
         units: list[_ChunkUnit] = []
-        current_heading: str | None = None
-        current_parts: list[str] = []
-
-        def flush() -> None:
-            nonlocal current_parts, current_heading
-            parts = [part for part in current_parts if part]
-            if parts:
-                units.append(_ChunkUnit(heading=current_heading, parts=parts))
-            current_heading = None
-            current_parts = []
+        context: dict = {
+            "heading": None,
+            "parts": [],
+        }
 
         for item in extracted_data.document_order:
-            if item.type == "paragraph":
-                paragraph = paragraph_map.get(item.index)
-                if paragraph is None:
-                    continue
+            self._process_docx_item(
+                item, paragraph_map, table_map, units, context
+            )
 
-                paragraph_text = self._format_paragraph(paragraph)
-                if not paragraph_text:
-                    continue
-
-                if self._is_heading(paragraph):
-                    flush()
-                    current_heading = paragraph_text
-                    current_parts = [paragraph_text]
-                    continue
-
-                current_parts.append(paragraph_text)
-                continue
-
-            if item.type == "table":
-                table = table_map.get(item.index)
-                if table is None:
-                    continue
-                table_text = self._format_table(table)
-                if table_text:
-                    current_parts.append(table_text)
-
-        flush()
+        self._flush_docx_context(units, context)
 
         if units:
             return units
 
+        return self._build_docx_fallback_units(extracted_data)
+
+    def _process_docx_item(
+        self,
+        item: any,
+        paragraph_map: dict,
+        table_map: dict,
+        units: list[_ChunkUnit],
+        context: dict,
+    ) -> None:
+        """Process a single item from document order."""
+        if item.type == "paragraph":
+            self._process_docx_paragraph(
+                item, paragraph_map, units, context
+            )
+        elif item.type == "table":
+            self._process_docx_table(item, table_map, context)
+
+    def _process_docx_paragraph(
+        self,
+        item: any,
+        paragraph_map: dict,
+        units: list[_ChunkUnit],
+        context: dict,
+    ) -> None:
+        """Process a paragraph item from document order."""
+        paragraph = paragraph_map.get(item.index)
+        if paragraph is None:
+            return
+
+        paragraph_text = self._format_paragraph(paragraph)
+        if not paragraph_text:
+            return
+
+        if self._is_heading(paragraph):
+            self._flush_docx_context(units, context)
+            context["heading"] = paragraph_text
+            context["parts"] = [paragraph_text]
+            return
+
+        context["parts"].append(paragraph_text)
+
+    def _process_docx_table(
+        self,
+        item: any,
+        table_map: dict,
+        context: dict,
+    ) -> None:
+        """Process a table item from document order."""
+        table = table_map.get(item.index)
+        if table is None:
+            return
+        table_text = self._format_table(table)
+        if table_text:
+            context["parts"].append(table_text)
+
+    def _flush_docx_context(
+        self,
+        units: list[_ChunkUnit],
+        context: dict,
+    ) -> None:
+        """Flush accumulated context into units."""
+        parts = [part for part in context["parts"] if part]
+        if parts:
+            units.append(_ChunkUnit(heading=context["heading"], parts=parts))
+        context["heading"] = None
+        context["parts"] = []
+
+    def _build_docx_fallback_units(
+        self, extracted_data: ExtractedData
+    ) -> list[_ChunkUnit]:
+        """Build fallback units when document order is empty."""
         fallback_parts = [
             self._format_paragraph(paragraph)
             for paragraph in extracted_data.paragraphs
@@ -176,8 +239,10 @@ class ChunkingService:
         if fallback_parts:
             return [_ChunkUnit(heading=None, parts=fallback_parts)]
 
-        fallback_tables = [self._format_table(
-            table) for table in extracted_data.tables]
+        fallback_tables = [
+            self._format_table(table)
+            for table in extracted_data.tables
+        ]
         fallback_tables = [table for table in fallback_tables if table]
         if fallback_tables:
             return [_ChunkUnit(heading=None, parts=fallback_tables)]
@@ -226,35 +291,46 @@ class ChunkingService:
         return bool(match and int(match.group(1)) <= 4)
 
     def _split_unit(self, unit: _ChunkUnit) -> list[str]:
+        """Split unit into chunks respecting size constraints."""
         chunks: list[str] = []
         current_parts: list[str] = []
         current_length = 0
 
         for part in unit.parts:
-            if len(part) > self.max_chunk_chars:
-                if current_parts:
-                    chunks.append("\n".join(current_parts).strip())
-                    current_parts = []
-                    current_length = 0
-                chunks.extend(self._split_large_text(part))
-                continue
-
-            separator_length = 1 if current_parts else 0
-            candidate_length = current_length + separator_length + len(part)
-            if candidate_length <= self.max_chunk_chars:
-                current_parts.append(part)
-                current_length = candidate_length
-                continue
-
-            if current_parts:
-                chunks.append("\n".join(current_parts).strip())
-            current_parts = [part]
-            current_length = len(part)
+            self._process_unit_part(
+                part, chunks, current_parts, current_length
+            )
 
         if current_parts:
             chunks.append("\n".join(current_parts).strip())
 
         return [chunk for chunk in chunks if chunk]
+
+    def _process_unit_part(
+        self,
+        part: str,
+        chunks: list[str],
+        current_parts: list[str],
+        current_length: int,
+    ) -> None:
+        """Process a single part for unit splitting."""
+        if len(part) > self.max_chunk_chars:
+            if current_parts:
+                chunks.append("\n".join(current_parts).strip())
+                current_parts.clear()
+            chunks.extend(self._split_large_text(part))
+            return
+
+        separator_length = 1 if current_parts else 0
+        candidate_length = current_length + separator_length + len(part)
+        if candidate_length <= self.max_chunk_chars:
+            current_parts.append(part)
+            return
+
+        if current_parts:
+            chunks.append("\n".join(current_parts).strip())
+            current_parts.clear()
+        current_parts.append(part)
 
     def _split_large_text(self, text: str) -> list[str]:
         sentences = [sentence.strip() for sentence in _SENTENCE_BOUNDARY_RE.split(

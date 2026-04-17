@@ -4,12 +4,87 @@ import logging
 import re
 from typing import Any
 
+BULLET_PATTERN = r"^\s*[-*+]\s+"
+NUMBERED_PATTERN = r"^\s*\d+[.)]\s+"
+
 
 class TextExtractionPipeline:
     """Extract plain text content to JSON format."""
 
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
+
+    @staticmethod
+    def _is_list_line(line: str) -> bool:
+        """Return True when the line starts with a bullet or numbered marker."""
+        return bool(re.match(BULLET_PATTERN, line)) or bool(
+            re.match(NUMBERED_PATTERN, line)
+        )
+
+    @staticmethod
+    def _parse_block(raw: str) -> tuple[str, bool, bool, str | None, str | None]:
+        """Normalize a block and derive list metadata.
+
+        Returns: (text, is_bullet, is_numbered, list_kind, numbering_format)
+        """
+        is_bullet = bool(re.match(BULLET_PATTERN, raw))
+        is_numbered = bool(re.match(NUMBERED_PATTERN, raw))
+        numbering_format: str | None = None
+        list_kind: str | None = None
+
+        if is_bullet:
+            list_kind = "bullet"
+            numbering_format = "bullet"
+            raw = re.sub(BULLET_PATTERN, "", raw, count=1)
+        elif is_numbered:
+            list_kind = "numbered"
+            marker = re.match(r"^\s*(\d+[.)])\s+", raw)
+            numbering_format = marker.group(1) if marker else "1."
+            raw = re.sub(NUMBERED_PATTERN, "", raw, count=1)
+
+        return raw, is_bullet, is_numbered, list_kind, numbering_format
+
+    def _build_paragraph(
+        self,
+        paragraph_index: int,
+        raw: str,
+        is_bullet: bool,
+        is_numbered: bool,
+        list_kind: str | None,
+        numbering_format: str | None,
+    ) -> dict[str, Any]:
+        """Build a normalized paragraph object."""
+        return {
+            "index": paragraph_index,
+            "text": raw,
+            "style": None,
+            "is_bullet": is_bullet,
+            "is_numbered": is_numbered,
+            "list_info": {
+                "kind": list_kind,
+                "numbering_format": numbering_format,
+            }
+            if (is_bullet or is_numbered)
+            else None,
+            "numbering_format": numbering_format,
+            "alignment": None,
+            "runs": [
+                {
+                    "index": 0,
+                    "text": raw,
+                    "bold": None,
+                    "italic": None,
+                    "underline": None,
+                    "font_name": None,
+                    "font_size_pt": None,
+                    "color_rgb": None,
+                    "highlight_color": None,
+                    "hyperlink_url": None,
+                    "embedded_media": [],
+                }
+            ],
+            "source": {"format": "txt"},
+        }
 
     def run(self, file_bytes: bytes) -> dict[str, Any]:
         """Extract plain text and return JSON data."""
@@ -35,45 +110,22 @@ class TextExtractionPipeline:
             if not raw:
                 return
 
-            is_bullet = bool(re.match(r"^\s*[-*+]\s+", raw))
-            is_numbered = bool(re.match(r"^\s*\d+[.)]\s+", raw))
-            numbering_format = None
+            (
+                raw,
+                is_bullet,
+                is_numbered,
+                list_kind,
+                numbering_format,
+            ) = self._parse_block(raw)
 
-            if is_bullet:
-                numbering_format = "bullet"
-                raw = re.sub(r"^\s*[-*+]\s+", "", raw, count=1)
-            elif is_numbered:
-                marker = re.match(r"^\s*(\d+[.)])\s+", raw)
-                numbering_format = marker.group(1) if marker else "1."
-                raw = re.sub(r"^\s*\d+[.)]\s+", "", raw, count=1)
-
-            paragraph: dict[str, Any] = {
-                "index": paragraph_index,
-                "text": raw,
-                "style": None,
-                "is_bullet": is_bullet,
-                "is_numbered": is_numbered,
-                "list_info": {
-                    "kind": "bullet" if is_bullet else ("numbered" if is_numbered else None),
-                    "numbering_format": numbering_format,
-                } if (is_bullet or is_numbered) else None,
-                "numbering_format": numbering_format,
-                "alignment": None,
-                "runs": [{
-                    "index": 0,
-                    "text": raw,
-                    "bold": None,
-                    "italic": None,
-                    "underline": None,
-                    "font_name": None,
-                    "font_size_pt": None,
-                    "color_rgb": None,
-                    "highlight_color": None,
-                    "hyperlink_url": None,
-                    "embedded_media": [],
-                }],
-                "source": {"format": "txt"},
-            }
+            paragraph = self._build_paragraph(
+                paragraph_index=paragraph_index,
+                raw=raw,
+                is_bullet=is_bullet,
+                is_numbered=is_numbered,
+                list_kind=list_kind,
+                numbering_format=numbering_format,
+            )
             paragraphs.append(paragraph)
             document_order.append(
                 {"type": "paragraph", "index": paragraph_index})
@@ -85,9 +137,7 @@ class TextExtractionPipeline:
                 flush_block()
                 continue
 
-            is_list_line = bool(re.match(r"^\s*[-*+]\s+", line)) or bool(
-                re.match(r"^\s*\d+[.)]\s+", line)
-            )
+            is_list_line = self._is_list_line(line)
 
             if is_list_line:
                 # Keep adjacent list items as separate paragraph entries.

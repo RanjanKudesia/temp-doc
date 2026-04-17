@@ -26,6 +26,8 @@ from app.schemas.temp_doc_schema import (
     ExtractedTable,
 )
 
+W_VAL_LITERAL = "w:val"
+
 
 class DocxGenerationPipeline:
     """Generate DOCX from extracted data."""
@@ -56,20 +58,40 @@ class DocxGenerationPipeline:
         table_by_index = {item.index: item for item in extracted_data.tables}
 
         if extracted_data.document_order:
-            for order_item in extracted_data.document_order:
-                if order_item.type == "paragraph":
-                    paragraph = paragraph_by_index.get(order_item.index)
-                    if paragraph is not None:
-                        self._add_extracted_paragraph(document, paragraph)
-                elif order_item.type == "table":
-                    table = table_by_index.get(order_item.index)
-                    if table is not None:
-                        self._add_extracted_table(document, table)
-        else:
-            for paragraph in sorted(extracted_data.paragraphs, key=lambda item: item.index):
-                self._add_extracted_paragraph(document, paragraph)
-            for table in sorted(extracted_data.tables, key=lambda item: item.index):
-                self._add_extracted_table(document, table)
+            self._add_items_in_document_order(
+                document,
+                extracted_data,
+                paragraph_by_index,
+                table_by_index,
+            )
+            return
+
+        self._add_items_sorted(document, extracted_data)
+
+    def _add_items_in_document_order(
+        self,
+        document: Document,
+        extracted_data: ExtractedData,
+        paragraph_by_index: dict[int, ExtractedParagraph],
+        table_by_index: dict[int, ExtractedTable],
+    ) -> None:
+        """Render paragraphs/tables based on preserved source order."""
+        for order_item in extracted_data.document_order:
+            if order_item.type == "paragraph":
+                paragraph = paragraph_by_index.get(order_item.index)
+                if paragraph is not None:
+                    self._add_extracted_paragraph(document, paragraph)
+            elif order_item.type == "table":
+                table = table_by_index.get(order_item.index)
+                if table is not None:
+                    self._add_extracted_table(document, table)
+
+    def _add_items_sorted(self, document: Document, extracted_data: ExtractedData) -> None:
+        """Render paragraphs/tables in index order when source order is absent."""
+        for paragraph in sorted(extracted_data.paragraphs, key=lambda item: item.index):
+            self._add_extracted_paragraph(document, paragraph)
+        for table in sorted(extracted_data.tables, key=lambda item: item.index):
+            self._add_extracted_table(document, table)
 
     def _apply_document_defaults(
         self,
@@ -94,57 +116,76 @@ class DocxGenerationPipeline:
                 try:
                     style_obj.font.color.rgb = self._hex_to_rgb_color(
                         defaults.color_rgb)
-                except Exception:
+                except (ValueError, TypeError):
                     pass
 
     def _apply_extracted_styles(self, document: Document, styles: list[ExtractedStyle]) -> None:
         """Apply extracted style font defaults so inherited formatting is preserved."""
+        for style_data, style_obj in self._iter_style_targets(document, styles):
+            font_data = style_data.font
+            if font_data is None:
+                continue
+            self._apply_style_font_overrides(style_obj, font_data)
+
+    def _iter_style_targets(self, document: Document, styles: list[ExtractedStyle]):
+        """Yield (style_data, style_obj) for styles that can be applied."""
         for style_data in styles:
             if style_data.font is None:
                 continue
-
             style_obj = self._get_or_create_style(document, style_data)
             if style_obj is None:
                 continue
+            yield style_data, style_obj
 
-            font_data = style_data.font
-            if font_data.name:
-                style_obj.font.name = font_data.name
-            else:
-                self._clear_style_rpr_override(style_obj, "rFonts")
-            if font_data.size_pt is not None and font_data.size_pt > 0:
-                style_obj.font.size = Pt(font_data.size_pt)
-            else:
-                self._clear_style_rpr_override(style_obj, "sz")
-                self._clear_style_rpr_override(style_obj, "szCs")
-            if font_data.bold is not None:
-                style_obj.font.bold = font_data.bold
-            else:
-                self._clear_style_rpr_override(style_obj, "b")
-            if font_data.italic is not None:
-                style_obj.font.italic = font_data.italic
-            else:
-                self._clear_style_rpr_override(style_obj, "i")
-            if font_data.underline is not None:
-                style_obj.font.underline = font_data.underline
-            else:
-                self._clear_style_rpr_override(style_obj, "u")
-            if font_data.color_rgb:
-                try:
-                    style_obj.font.color.rgb = self._hex_to_rgb_color(
-                        font_data.color_rgb)
-                except Exception:
-                    pass
-            else:
-                self._clear_style_rpr_override(style_obj, "color")
-            if font_data.highlight_color:
-                try:
-                    style_obj.font.highlight_color = WD_COLOR_INDEX[font_data.highlight_color.upper(
-                    )]
-                except (KeyError, AttributeError):
-                    pass
-            else:
-                self._clear_style_rpr_override(style_obj, "highlight")
+    def _apply_style_font_overrides(self, style_obj, font_data) -> None:
+        """Apply extracted font settings to a style object."""
+        self._apply_style_name(style_obj, font_data)
+        self._apply_style_size(style_obj, font_data)
+        self._apply_style_bool(style_obj, "bold", font_data.bold, "b")
+        self._apply_style_bool(style_obj, "italic", font_data.italic, "i")
+        self._apply_style_bool(style_obj, "underline",
+                               font_data.underline, "u")
+        self._apply_style_color(style_obj, font_data)
+        self._apply_style_highlight(style_obj, font_data)
+
+    def _apply_style_name(self, style_obj, font_data) -> None:
+        if font_data.name:
+            style_obj.font.name = font_data.name
+            return
+        self._clear_style_rpr_override(style_obj, "rFonts")
+
+    def _apply_style_size(self, style_obj, font_data) -> None:
+        if font_data.size_pt is not None and font_data.size_pt > 0:
+            style_obj.font.size = Pt(font_data.size_pt)
+            return
+        self._clear_style_rpr_override(style_obj, "sz")
+        self._clear_style_rpr_override(style_obj, "szCs")
+
+    def _apply_style_bool(self, style_obj, attr: str, value: bool | None, clear_tag: str) -> None:
+        if value is None:
+            self._clear_style_rpr_override(style_obj, clear_tag)
+            return
+        setattr(style_obj.font, attr, value)
+
+    def _apply_style_color(self, style_obj, font_data) -> None:
+        if not font_data.color_rgb:
+            self._clear_style_rpr_override(style_obj, "color")
+            return
+        try:
+            style_obj.font.color.rgb = self._hex_to_rgb_color(
+                font_data.color_rgb)
+        except (ValueError, TypeError):
+            pass
+
+    def _apply_style_highlight(self, style_obj, font_data) -> None:
+        if not font_data.highlight_color:
+            self._clear_style_rpr_override(style_obj, "highlight")
+            return
+        try:
+            style_obj.font.highlight_color = WD_COLOR_INDEX[font_data.highlight_color.upper(
+            )]
+        except (KeyError, AttributeError):
+            pass
 
     def _clear_style_rpr_override(self, style_obj, tag_name: str) -> None:
         """Remove direct run-property override from style XML so value can inherit."""
@@ -157,7 +198,7 @@ class DocxGenerationPipeline:
             child = rpr.find(qn(f"w:{tag_name}"))
             if child is not None:
                 rpr.remove(child)
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError):
             return
 
     def _get_or_create_style(self, document: Document, style_data: ExtractedStyle):
@@ -191,34 +232,42 @@ class DocxGenerationPipeline:
 
         try:
             return document.styles.add_style(style_name, create_type)
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError):
             return None
 
     def _add_extracted_paragraph(self, document: Document, paragraph_data: ExtractedParagraph) -> None:
-        style_name = self._resolve_paragraph_style_name(paragraph_data)
-        if style_name:
-            try:
-                paragraph = document.add_paragraph(style=style_name)
-            except KeyError:
-                paragraph = document.add_paragraph()
-        else:
-            paragraph = document.add_paragraph()
+        paragraph = self._create_output_paragraph(document, paragraph_data)
 
         alignment = self._map_alignment(paragraph_data.alignment)
         if alignment is not None:
             paragraph.alignment = alignment
 
         if paragraph_data.runs:
-            for run_data in paragraph_data.runs:
-                if run_data.hyperlink_url:
-                    self._add_hyperlink_run(paragraph, run_data)
-                else:
-                    run = paragraph.add_run(run_data.text or "")
-                    self._apply_run_formatting(run, run_data)
-                    for media_item in run_data.embedded_media:
-                        self._add_media_to_paragraph(paragraph, media_item)
-        elif paragraph_data.text:
+            self._add_paragraph_runs(paragraph, paragraph_data)
+            return
+        if paragraph_data.text:
             paragraph.add_run(paragraph_data.text)
+
+    def _create_output_paragraph(self, document: Document, paragraph_data: ExtractedParagraph):
+        """Create paragraph with best-effort style assignment."""
+        style_name = self._resolve_paragraph_style_name(paragraph_data)
+        if style_name:
+            try:
+                return document.add_paragraph(style=style_name)
+            except KeyError:
+                return document.add_paragraph()
+        return document.add_paragraph()
+
+    def _add_paragraph_runs(self, paragraph, paragraph_data: ExtractedParagraph) -> None:
+        """Add runs and embedded media to paragraph."""
+        for run_data in paragraph_data.runs:
+            if run_data.hyperlink_url:
+                self._add_hyperlink_run(paragraph, run_data)
+                continue
+            run = paragraph.add_run(run_data.text or "")
+            self._apply_run_formatting(run, run_data)
+            for media_item in run_data.embedded_media:
+                self._add_media_to_paragraph(paragraph, media_item)
 
     def _apply_run_formatting(self, run, run_data) -> None:
         if run_data.bold is not None:
@@ -234,7 +283,7 @@ class DocxGenerationPipeline:
         if run_data.color_rgb:
             try:
                 run.font.color.rgb = self._hex_to_rgb_color(run_data.color_rgb)
-            except Exception:
+            except (ValueError, TypeError):
                 pass
         if run_data.highlight_color:
             try:
@@ -249,7 +298,7 @@ class DocxGenerationPipeline:
         try:
             r_id = paragraph.part.relate_to(
                 url, RT.HYPERLINK, is_external=True)
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError):
             run = paragraph.add_run(text)
             self._apply_run_formatting(run, run_data)
             return
@@ -257,22 +306,28 @@ class DocxGenerationPipeline:
         hyperlink = OxmlElement("w:hyperlink")
         hyperlink.set(qn("r:id"), r_id)
 
+        run_elem = self._build_hyperlink_run_element(run_data, text)
+        self._append_text_to_oxml_run(run_elem, text)
+
+        hyperlink.append(run_elem)
+        # python-docx has no public API to append hyperlink nodes directly.
+        # pylint: disable=protected-access
+        paragraph._p.append(hyperlink)
+
+    def _build_hyperlink_run_element(self, run_data, text: str):
+        """Build oxml run element with hyperlink style overrides."""
+        del text
         run_elem = OxmlElement("w:r")
         rpr = OxmlElement("w:rPr")
 
-        hyperlink_blue = "0563C1"
-        if run_data.color_rgb:
-            try:
-                hyperlink_blue = run_data.color_rgb.replace("#", "").strip()
-            except Exception:
-                pass
+        hyperlink_blue = self._resolve_hyperlink_color(run_data)
         color_elem = OxmlElement("w:color")
-        color_elem.set(qn("w:val"), hyperlink_blue)
+        color_elem.set(qn(W_VAL_LITERAL), hyperlink_blue)
         rpr.append(color_elem)
 
         if run_data.underline is not False:
             u_elem = OxmlElement("w:u")
-            u_elem.set(qn("w:val"), "single")
+            u_elem.set(qn(W_VAL_LITERAL), "single")
             rpr.append(u_elem)
 
         if run_data.bold:
@@ -287,17 +342,20 @@ class DocxGenerationPipeline:
         if run_data.font_size_pt and run_data.font_size_pt > 0:
             half_pts = str(int(run_data.font_size_pt * 2))
             sz = OxmlElement("w:sz")
-            sz.set(qn("w:val"), half_pts)
+            sz.set(qn(W_VAL_LITERAL), half_pts)
             rpr.append(sz)
             sz_cs = OxmlElement("w:szCs")
-            sz_cs.set(qn("w:val"), half_pts)
+            sz_cs.set(qn(W_VAL_LITERAL), half_pts)
             rpr.append(sz_cs)
 
         run_elem.append(rpr)
-        self._append_text_to_oxml_run(run_elem, text)
+        return run_elem
 
-        hyperlink.append(run_elem)
-        paragraph._p.append(hyperlink)
+    def _resolve_hyperlink_color(self, run_data) -> str:
+        """Return hyperlink color hex (without #), defaulting to theme-friendly blue."""
+        if not run_data.color_rgb:
+            return "0563C1"
+        return run_data.color_rgb.replace("#", "").strip()
 
     def _append_text_to_oxml_run(self, run_elem, text: str) -> None:
         buf: list[str] = []
@@ -414,9 +472,18 @@ class DocxGenerationPipeline:
                 run.add_picture(picture_source, width=Emu(width_emu))
             else:
                 run.add_picture(picture_source, width=Inches(2.5))
-        except Exception:
+        except (
+            AttributeError,
+            OSError,
+            TypeError,
+            ValueError,
+        ):
             return
 
     def _hex_to_rgb_color(self, value: str) -> RGBColor:
         hex_str = value.replace("#", "").strip()
-        return RGBColor(int(hex_str[0:2], 16), int(hex_str[2:4], 16), int(hex_str[4:6], 16))
+        return RGBColor(
+            int(hex_str[0:2], 16),
+            int(hex_str[2:4], 16),
+            int(hex_str[4:6], 16),
+        )

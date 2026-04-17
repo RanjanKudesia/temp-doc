@@ -23,7 +23,8 @@ class HtmlGenerationPipeline:
         "ol li{list-style-type:decimal;}"
         "ul ul,ol ul{list-style-type:circle;margin:4px 0 4px 20px;}"
         "ul ol,ol ol{list-style-type:lower-alpha;margin:4px 0 4px 20px;}"
-        "code{background:#272822;color:#f8f8f2;padding:2px 5px;border-radius:3px;font-family:monospace;}"
+        "code{background:#272822;color:#f8f8f2;padding:2px 5px;"
+        "border-radius:3px;font-family:monospace;}"
         ".rtl{direction:rtl;unicode-bidi:bidi-override;}"
         "hr.doc-divider{border:none;border-top:1px solid #ccc;margin:16px 0;}"
         ".nested-table-note{font-size:0.8em;color:#888;font-style:italic;}"
@@ -57,9 +58,9 @@ class HtmlGenerationPipeline:
             raise
 
     def _build_body(self, data: ExtractedData, title: str | None) -> list[str]:
-        paragraph_by_index = {p.index: p for p in data.paragraphs}
-        table_by_index = {t.index: t for t in data.tables}
-        media_by_index = {idx: m for idx, m in enumerate(data.media)}
+        paragraph_by_index = self._index_by_item_index(data.paragraphs)
+        table_by_index = self._index_by_item_index(data.tables)
+        media_by_index = dict(enumerate(data.media))
         parts: list[str] = []
 
         if title:
@@ -67,137 +68,244 @@ class HtmlGenerationPipeline:
 
         list_stack: list[tuple[str, int]] = []
 
-        def close_lists_to(target_level: int) -> None:
-            while list_stack and list_stack[-1][1] > target_level:
-                tag, _ = list_stack.pop()
-                parts.append(f"</{tag}>")
-
-        def close_all_lists() -> None:
-            while list_stack:
-                tag, _ = list_stack.pop()
-                parts.append(f"</{tag}>")
-
-        def open_list(tag: str, level: int, start: int | None) -> None:
-            if tag == "ol" and start and start != 1:
-                parts.append(f'<ol start="{start}">')
-            else:
-                parts.append(f"<{tag}>")
-            list_stack.append((tag, level))
-
-        def add_paragraph(p) -> None:
-            text = self._runs_to_html(
-                p.runs) if p.runs else escape(p.text or "")
-            heading = self._heading_level(p.style)
-
-            if getattr(p, "style", None) == "HorizontalRule":
-                close_all_lists()
-                parts.append('<hr class="doc-divider">')
-                return
-
-            if heading:
-                close_all_lists()
-                dir_attr = ' dir="rtl" class="rtl"' if getattr(
-                    p, "direction", None) == "rtl" else ""
-                parts.append(f"<h{heading}{dir_attr}>{text}</h{heading}>")
-                return
-
-            level = getattr(p, "list_level", None) or 0
-            if getattr(p, "is_bullet", False) or getattr(p, "is_numbered", False):
-                desired_tag = "ul" if getattr(p, "is_bullet", False) else "ol"
-                start = None
-                li = getattr(p, "list_info", None)
-                if li and isinstance(li, dict):
-                    start = li.get("start")
-
-                if not list_stack:
-                    open_list(desired_tag, level, start)
-                elif list_stack[-1][1] < level:
-                    open_list(desired_tag, level, start)
-                elif list_stack[-1][1] > level:
-                    close_lists_to(level)
-                    if not list_stack or list_stack[-1][1] != level:
-                        open_list(desired_tag, level, start)
-                elif list_stack[-1][0] != desired_tag:
-                    close_lists_to(level - 1)
-                    open_list(desired_tag, level, start)
-
-                parts.append(f"<li>{text}</li>")
-                return
-
-            close_all_lists()
-            dir_attr = ' dir="rtl" class="rtl"' if getattr(
-                p, "direction", None) == "rtl" else ""
-            parts.append(f"<p{dir_attr}>{text}</p>")
-
-        def add_table(t) -> None:
-            close_all_lists()
-            parts.append(self._extracted_table_to_html(t))
-
-        def add_media(m) -> None:
-            close_all_lists()
-            src = (getattr(m, "local_url", None) or getattr(
-                m, "local_file_path", None) or "").strip()
-            if not src:
-                return
-            alt = escape((getattr(m, "alt_text", None) or "").strip())
-            parts.append(
-                f'<p><img src="{escape(src, quote=True)}" alt="{alt}" '
-                f'style="max-width:100%;height:auto;"></p>'
-            )
-
         if data.document_order:
-            for item in data.document_order:
-                if item.type == "paragraph":
-                    p = paragraph_by_index.get(item.index)
-                    if p is not None:
-                        add_paragraph(p)
-                elif item.type == "table":
-                    t = table_by_index.get(item.index)
-                    if t is not None:
-                        add_table(t)
-                elif item.type == "media":
-                    m = media_by_index.get(item.index)
-                    if m is not None:
-                        add_media(m)
+            self._build_body_from_order(
+                data,
+                parts,
+                list_stack,
+                paragraph_by_index,
+                table_by_index,
+                media_by_index,
+            )
         else:
-            for p in sorted(data.paragraphs, key=lambda x: x.index):
-                add_paragraph(p)
-            for t in sorted(data.tables, key=lambda x: x.index):
-                add_table(t)
+            self._build_body_from_sorted(data, parts, list_stack)
 
-        close_all_lists()
+        self._close_all_lists(parts, list_stack)
         return parts
 
+    def _index_by_item_index(self, items: list) -> dict:
+        """Index schema objects by their `index` field."""
+        indexed: dict = {}
+        for item in items:
+            indexed[item.index] = item
+        return indexed
+
+    def _build_body_from_order(
+        self,
+        data: ExtractedData,
+        parts: list[str],
+        list_stack: list[tuple[str, int]],
+        paragraph_by_index: dict,
+        table_by_index: dict,
+        media_by_index: dict,
+    ) -> None:
+        """Build body following explicit document order."""
+        for item in data.document_order:
+            if item.type == "paragraph":
+                paragraph = paragraph_by_index.get(item.index)
+                if paragraph is not None:
+                    self._add_paragraph(parts, list_stack, paragraph)
+            elif item.type == "table":
+                table = table_by_index.get(item.index)
+                if table is not None:
+                    self._add_table(parts, list_stack, table)
+            elif item.type == "media":
+                media = media_by_index.get(item.index)
+                if media is not None:
+                    self._add_media(parts, list_stack, media)
+
+    def _build_body_from_sorted(
+        self,
+        data: ExtractedData,
+        parts: list[str],
+        list_stack: list[tuple[str, int]],
+    ) -> None:
+        """Build body using paragraph/table index ordering."""
+        for paragraph in sorted(data.paragraphs, key=lambda item: item.index):
+            self._add_paragraph(parts, list_stack, paragraph)
+        for table in sorted(data.tables, key=lambda item: item.index):
+            self._add_table(parts, list_stack, table)
+
+    def _close_lists_to(
+        self,
+        parts: list[str],
+        list_stack: list[tuple[str, int]],
+        target_level: int,
+    ) -> None:
+        """Close lists down to target nesting level."""
+        while list_stack and list_stack[-1][1] > target_level:
+            tag, _ = list_stack.pop()
+            parts.append(f"</{tag}>")
+
+    def _close_all_lists(
+        self,
+        parts: list[str],
+        list_stack: list[tuple[str, int]],
+    ) -> None:
+        """Close all currently open lists."""
+        while list_stack:
+            tag, _ = list_stack.pop()
+            parts.append(f"</{tag}>")
+
+    def _open_list(
+        self,
+        parts: list[str],
+        list_stack: list[tuple[str, int]],
+        tag: str,
+        level: int,
+        start: int | None,
+    ) -> None:
+        """Open a list tag and track nesting."""
+        if tag == "ol" and start and start != 1:
+            parts.append(f'<ol start="{start}">')
+        else:
+            parts.append(f"<{tag}>")
+        list_stack.append((tag, level))
+
+    def _add_paragraph(
+        self,
+        parts: list[str],
+        list_stack: list[tuple[str, int]],
+        paragraph,
+    ) -> None:
+        """Append a paragraph-like item, including headings/lists/hr."""
+        text = self._runs_to_html(
+            paragraph.runs) if paragraph.runs else escape(paragraph.text or "")
+        if getattr(paragraph, "style", None) == "HorizontalRule":
+            self._close_all_lists(parts, list_stack)
+            parts.append('<hr class="doc-divider">')
+            return
+
+        heading = self._heading_level(paragraph.style)
+        if heading:
+            self._close_all_lists(parts, list_stack)
+            parts.append(
+                f"<h{heading}{self._dir_attr(paragraph)}>{text}</h{heading}>"
+            )
+            return
+
+        if self._is_list_paragraph(paragraph):
+            self._add_list_item(parts, list_stack, paragraph, text)
+            return
+
+        self._close_all_lists(parts, list_stack)
+        parts.append(f"<p{self._dir_attr(paragraph)}>{text}</p>")
+
+    def _dir_attr(self, paragraph) -> str:
+        """Return rtl direction attribute for paragraph-like objects."""
+        return ' dir="rtl" class="rtl"' if getattr(paragraph, "direction", None) == "rtl" else ""
+
+    def _is_list_paragraph(self, paragraph) -> bool:
+        """Return True when paragraph should be rendered as a list item."""
+        return bool(getattr(paragraph, "is_bullet", False) or getattr(paragraph, "is_numbered", False))
+
+    def _add_list_item(
+        self,
+        parts: list[str],
+        list_stack: list[tuple[str, int]],
+        paragraph,
+        text: str,
+    ) -> None:
+        """Append a paragraph as a nested UL/OL list item."""
+        level = getattr(paragraph, "list_level", None) or 0
+        desired_tag = "ul" if getattr(paragraph, "is_bullet", False) else "ol"
+        start = self._list_start(paragraph)
+
+        if not list_stack:
+            self._open_list(parts, list_stack, desired_tag, level, start)
+        elif list_stack[-1][1] < level:
+            self._open_list(parts, list_stack, desired_tag, level, start)
+        elif list_stack[-1][1] > level:
+            self._close_lists_to(parts, list_stack, level)
+            if not list_stack or list_stack[-1][1] != level:
+                self._open_list(parts, list_stack, desired_tag, level, start)
+        elif list_stack[-1][0] != desired_tag:
+            self._close_lists_to(parts, list_stack, level - 1)
+            self._open_list(parts, list_stack, desired_tag, level, start)
+
+        parts.append(f"<li>{text}</li>")
+
+    def _list_start(self, paragraph) -> int | None:
+        """Extract ordered-list start value from list_info when present."""
+        list_info = getattr(paragraph, "list_info", None)
+        if isinstance(list_info, dict):
+            return list_info.get("start")
+        return None
+
+    def _add_table(self, parts: list[str], list_stack: list[tuple[str, int]], table) -> None:
+        """Append table content after closing active lists."""
+        self._close_all_lists(parts, list_stack)
+        parts.append(self._extracted_table_to_html(table))
+
+    def _add_media(self, parts: list[str], list_stack: list[tuple[str, int]], media) -> None:
+        """Append media image tag after closing active lists."""
+        self._close_all_lists(parts, list_stack)
+        src = (getattr(media, "local_url", None) or getattr(
+            media, "local_file_path", None) or "").strip()
+        if not src:
+            return
+        alt = escape((getattr(media, "alt_text", None) or "").strip())
+        parts.append(
+            f'<p><img src="{escape(src, quote=True)}" alt="{alt}" '
+            f'style="max-width:100%;height:auto;"></p>'
+        )
+
     def _extracted_table_to_html(self, t) -> str:
-        rows_html: list[str] = []
-        for row in t.rows:
-            cells_html: list[str] = []
-            for cell in row.cells:
-                tag = "th" if getattr(cell, "is_header", False) else "td"
-                cs = getattr(cell, "colspan", 1) or 1
-                rs = getattr(cell, "rowspan", 1) or 1
-                attrs = ""
-                if cs > 1:
-                    attrs += f' colspan="{cs}"'
-                if rs > 1:
-                    attrs += f' rowspan="{rs}"'
-                cell_parts: list[str] = []
-                for para in (cell.paragraphs or []):
-                    if para.runs:
-                        cell_parts.append(self._runs_to_html(para.runs))
-                    elif para.text:
-                        cell_parts.append(escape(para.text))
-                nested = getattr(cell, "nested_table_indices", [])
-                if nested:
-                    ids = ", ".join(str(i) for i in nested)
-                    cell_parts.append(
-                        f'<span class="nested-table-note">[nested table(s): {ids}]</span>'
-                    )
-                cell_content = " ".join(
-                    cell_parts) if cell_parts else escape(cell.text or "")
-                cells_html.append(f"<{tag}{attrs}>{cell_content}</{tag}>")
-            rows_html.append("<tr>" + "".join(cells_html) + "</tr>")
+        rows_html = [self._table_row_to_html(row) for row in t.rows]
         return "<table>" + "".join(rows_html) + "</table>"
+
+    def _table_row_to_html(self, row) -> str:
+        """Render a table row to html."""
+        cells_html = [self._table_cell_to_html(cell) for cell in row.cells]
+        return "<tr>" + "".join(cells_html) + "</tr>"
+
+    def _table_cell_to_html(self, cell) -> str:
+        """Render a single table cell to html."""
+        tag = "th" if getattr(cell, "is_header", False) else "td"
+        attrs = self._table_cell_attrs(cell)
+        cell_content = self._table_cell_content(cell)
+        return f"<{tag}{attrs}>{cell_content}</{tag}>"
+
+    def _table_cell_attrs(self, cell) -> str:
+        """Build colspan/rowspan html attributes."""
+        colspan = getattr(cell, "colspan", 1) or 1
+        rowspan = getattr(cell, "rowspan", 1) or 1
+        attrs = ""
+        if colspan > 1:
+            attrs += f' colspan="{colspan}"'
+        if rowspan > 1:
+            attrs += f' rowspan="{rowspan}"'
+        return attrs
+
+    def _table_cell_content(self, cell) -> str:
+        """Render textual and nested-table note content for cell."""
+        cell_parts = [
+            self._table_paragraph_to_html(para)
+            for para in (cell.paragraphs or [])
+            if self._table_paragraph_to_html(para)
+        ]
+        nested_note = self._nested_table_note(cell)
+        if nested_note:
+            cell_parts.append(nested_note)
+        if cell_parts:
+            return " ".join(cell_parts)
+        return escape(cell.text or "")
+
+    def _table_paragraph_to_html(self, para) -> str:
+        """Render paragraph inside a table cell."""
+        if para.runs:
+            return self._runs_to_html(para.runs)
+        if para.text:
+            return escape(para.text)
+        return ""
+
+    def _nested_table_note(self, cell) -> str:
+        """Render nested-table marker when indices are present."""
+        nested = getattr(cell, "nested_table_indices", [])
+        if not nested:
+            return ""
+        ids = ", ".join(str(i) for i in nested)
+        return f'<span class="nested-table-note">[nested table(s): {ids}]</span>'
 
     def _runs_to_html(self, runs: list) -> str:
         parts: list[str] = []

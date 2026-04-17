@@ -1,3 +1,5 @@
+"""Pydantic schemas for document extraction and generation requests/responses."""
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -225,8 +227,6 @@ class ExtractedPptData(BaseModel):
 
 class ExtractRequest(BaseModel):
     """Request model for extraction - implicit via form data."""
-
-    pass
 
 
 class ExtractResponse(BaseModel):

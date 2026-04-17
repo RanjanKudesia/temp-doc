@@ -6,6 +6,213 @@ from typing import Any
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
+# ── Module-level helpers ──────────────────────────────────────────────────────
+
+_BLOCK_SKIP_TAGS = {"ul", "ol", "table", "img"}
+
+
+def _normalize_text(value: str) -> str:
+    if not value:
+        return ""
+    value = value.replace("\r\n", "\n").replace("\r", "\n")
+    lines = []
+    for line in value.split("\n"):
+        cleaned = re.sub(r"\s+", " ", line).strip()
+        if cleaned:
+            lines.append(cleaned)
+    return "\n".join(lines)
+
+
+def _default_run(text: str) -> dict[str, Any]:
+    return {
+        "index": 0,
+        "text": text,
+        "bold": None,
+        "italic": None,
+        "underline": None,
+        "strikethrough": None,
+        "code": None,
+        "font_name": None,
+        "font_size_pt": None,
+        "color_rgb": None,
+        "highlight_color": None,
+        "hyperlink_url": None,
+        "embedded_media": [],
+    }
+
+
+def _same_style(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    keys = ("bold", "italic", "underline", "strikethrough", "code",
+            "color_rgb", "font_name", "hyperlink_url")
+    return all(a.get(k) == b.get(k) for k in keys)
+
+
+def _css_color_to_rgb(raw: str) -> str | None:
+    raw = raw.strip()
+    if raw.startswith("#"):
+        return raw
+    m_rgb = re.match(
+        r"rgb\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)", raw, re.I)
+    if m_rgb:
+        r, g, b = int(m_rgb.group(1)), int(m_rgb.group(2)), int(m_rgb.group(3))
+        return f"#{r:02x}{g:02x}{b:02x}"
+    if re.match(r"^[a-zA-Z]+$", raw):
+        return raw
+    return None
+
+
+def _apply_tag_style_flags(name: str, style: dict[str, Any]) -> None:
+    """Update style dict in-place based on semantic HTML tag name."""
+    if name in {"b", "strong"}:
+        style["bold"] = True
+    if name in {"i", "em"}:
+        style["italic"] = True
+    if name in {"u", "ins"}:
+        style["underline"] = True
+    if name in {"s", "del", "strike"}:
+        style["strikethrough"] = True
+    if name in {"code", "kbd", "samp", "tt"}:
+        style["code"] = True
+    if name == "a":
+        href = (style.get("_node_href") or "").strip()
+        if href:
+            style["hyperlink_url"] = href
+
+
+def _apply_inline_css(node: Tag, style: dict[str, Any]) -> None:
+    """Update style dict in-place from element's inline CSS."""
+    inline = node.get("style") or ""
+    if not inline:
+        return
+    m_color = re.search(r"\bcolor\s*:\s*([^;]+)", inline, re.I)
+    if m_color:
+        style["color_rgb"] = _css_color_to_rgb(m_color.group(1).strip())
+    m_font = re.search(r"\bfont-family\s*:\s*([^;]+)", inline, re.I)
+    if m_font:
+        font_raw = (
+            m_font.group(1).strip().strip("'\"").split(
+                ",")[0].strip().strip("'\"")
+        )
+        if font_raw:
+            style["font_name"] = font_raw
+
+
+class _RunCollector:
+    """Accumulates inline runs from a parsed HTML element tree."""
+
+    def __init__(self, *, skip_block_children: bool) -> None:
+        self.runs: list[dict[str, Any]] = []
+        self._skip_block = skip_block_children
+
+    def push_text(self, text: str, style: dict[str, Any]) -> None:
+        """Append or merge a text run."""
+        normalized = _normalize_text(text)
+        if not normalized:
+            return
+        run = {
+            "index": len(self.runs),
+            "text": normalized,
+            "bold": style.get("bold"),
+            "italic": style.get("italic"),
+            "underline": style.get("underline"),
+            "strikethrough": style.get("strikethrough"),
+            "code": style.get("code"),
+            "color_rgb": style.get("color_rgb"),
+            "font_name": style.get("font_name"),
+            "font_size_pt": None,
+            "highlight_color": None,
+            "hyperlink_url": style.get("hyperlink_url"),
+            "embedded_media": [],
+        }
+        if self.runs and _same_style(self.runs[-1], run):
+            self.runs[-1]["text"] = f"{self.runs[-1]['text']} {run['text']}".strip()
+        else:
+            run["index"] = len(self.runs)
+            self.runs.append(run)
+
+    def collect(self, node: Any, style: dict[str, Any]) -> None:
+        """Recursively walk a node tree and accumulate runs."""
+        if isinstance(node, NavigableString):
+            self.push_text(str(node), style)
+            return
+        if not isinstance(node, Tag):
+            return
+        name = (node.name or "").lower()
+        if name in {"script", "style", "noscript"}:
+            return
+        if self._skip_block and name in _BLOCK_SKIP_TAGS:
+            return
+        if name in {"table", "ul", "ol"}:
+            return
+        if name == "br":
+            self.push_text("\n", style)
+            return
+        next_style = dict(style)
+        if name == "a":
+            next_style["_node_href"] = (node.get("href") or "").strip()
+        _apply_tag_style_flags(name, next_style)
+        next_style.pop("_node_href", None)
+        _apply_inline_css(node, next_style)
+        for sub in node.children:
+            self.collect(sub, next_style)
+
+
+def _collect_runs(element: Tag, *, skip_block_children: bool) -> list[dict[str, Any]]:
+    collector = _RunCollector(skip_block_children=skip_block_children)
+    collector.collect(element, {
+        "bold": None, "italic": None, "underline": None,
+        "strikethrough": None, "code": None,
+        "color_rgb": None, "font_name": None,
+        "hyperlink_url": None,
+    })
+    for idx, run in enumerate(collector.runs):
+        run["index"] = idx
+    return collector.runs
+
+
+def _extract_runs(element: Tag) -> list[dict[str, Any]]:
+    return _collect_runs(element, skip_block_children=False)
+
+
+def _extract_runs_skip_blocks(element: Tag) -> list[dict[str, Any]]:
+    return _collect_runs(element, skip_block_children=True)
+
+
+# ── Extraction state ──────────────────────────────────────────────────────────
+
+_RTL_BLOCK_SET = {"rtl"}
+_ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]")
+_DIRECTION_RE = re.compile(r"\bdirection\s*:\s*(\w+)", re.I)
+
+
+def _is_element_rtl(elem: Tag) -> bool:
+    """Return True if the element has or implies RTL text direction."""
+    elem_dir = (elem.get("dir") or "").lower()
+    m_dir = _DIRECTION_RE.search(elem.get("style") or "")
+    has_arabic = bool(_ARABIC_RE.search(elem.get_text()))
+    return (
+        elem_dir in _RTL_BLOCK_SET
+        or (m_dir is not None and m_dir.group(1).lower() in _RTL_BLOCK_SET)
+        or has_arabic
+    )
+
+
+class _ExtractionState:
+    """Holds mutable state for a single HTML extraction run."""
+
+    def __init__(self) -> None:
+        self.paragraphs: list[dict[str, Any]] = []
+        self.tables: list[dict[str, Any]] = []
+        self.media: list[dict[str, Any]] = []
+        self.document_order: list[dict[str, Any]] = []
+        self.seen_tables: set[int] = set()
+        self.paragraph_index: int = 0
+        self.table_index: int = 0
+        self.media_index: int = 0
+
+
+# ── Pipeline ──────────────────────────────────────────────────────────────────
+
 
 class HtmlExtractionPipeline:
     """Extract HTML content to JSON format."""
@@ -21,6 +228,8 @@ class HtmlExtractionPipeline:
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
 
+    # ── Public entry point ────────────────────────────────────────────────────
+
     def run(self, file_bytes: bytes) -> dict[str, Any]:
         """Extract HTML and return JSON data."""
         try:
@@ -31,496 +240,8 @@ class HtmlExtractionPipeline:
         soup = BeautifulSoup(html, "lxml")
         root = soup.body or soup
 
-        paragraphs: list[dict[str, Any]] = []
-        tables: list[dict[str, Any]] = []
-        media: list[dict[str, Any]] = []
-        document_order: list[dict[str, Any]] = []
-        seen_tables: set[int] = set()
-
-        paragraph_index = 0
-        table_index = 0
-        media_index_counter = 0
-
-        def add_media(image_elem: Tag) -> None:
-            nonlocal media_index_counter
-            src = (image_elem.get("src") or "").strip()
-            if not src:
-                return
-            w = image_elem.get("width", "")
-            h = image_elem.get("height", "")
-            media.append({
-                "relationship_id": f"html_img_{media_index_counter}",
-                "content_type": None,
-                "file_name": src.split("/")[-1],
-                "local_file_path": src,
-                "local_url": src,
-                "width_emu": int(w) if str(w).isdigit() else None,
-                "height_emu": int(h) if str(h).isdigit() else None,
-                "alt_text": (image_elem.get("alt") or "").strip() or None,
-            })
-            document_order.append(
-                {"type": "media", "index": media_index_counter})
-            media_index_counter += 1
-
-        def add_paragraph_from_element(
-            elem: Tag,
-            *,
-            heading_level: int | None = None,
-            is_bullet: bool = False,
-            is_numbered: bool = False,
-            numbering_format: str | None = None,
-            list_level: int = 0,
-            list_start: int | None = None,
-            direction: str | None = None,
-        ) -> None:
-            nonlocal paragraph_index
-
-            runs = _extract_runs(elem)
-            text = "".join((run.get("text") or "") for run in runs).strip()
-            if not text:
-                return
-
-            style = f"Heading {heading_level}" if heading_level else None
-
-            elem_dir = (elem.get("dir") or "").lower()
-            inline_style = elem.get("style") or ""
-            m_dir = re.search(r"\bdirection\s*:\s*(\w+)", inline_style, re.I)
-            if not direction:
-                if elem_dir in self._RTL_VALUES:
-                    direction = "rtl"
-                elif m_dir and m_dir.group(1).lower() in self._RTL_VALUES:
-                    direction = "rtl"
-                elif re.search(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]", text):
-                    direction = "rtl"
-
-            paragraphs.append({
-                "index": paragraph_index,
-                "text": text,
-                "style": style,
-                "is_bullet": is_bullet,
-                "is_numbered": is_numbered,
-                "list_info": {
-                    "kind": "bullet" if is_bullet else ("numbered" if is_numbered else None),
-                    "numbering_format": numbering_format,
-                    "level": list_level,
-                    "start": list_start,
-                } if (is_bullet or is_numbered) else None,
-                "numbering_format": numbering_format,
-                "list_level": list_level if (is_bullet or is_numbered) else None,
-                "alignment": None,
-                "direction": direction,
-                "runs": runs if runs else [_default_run(text)],
-                "source": {"format": "html"},
-            })
-            document_order.append(
-                {"type": "paragraph", "index": paragraph_index})
-            paragraph_index += 1
-
-        def add_table(table_elem: Tag) -> None:
-            nonlocal table_index
-
-            table_id = id(table_elem)
-            if table_id in seen_tables:
-                return
-            seen_tables.add(table_id)
-
-            table_rows: list[dict[str, Any]] = []
-            max_cols = 0
-
-            direct_rows = [
-                tr for tr in table_elem.find_all("tr")
-                if tr.find_parent("table") is table_elem
-            ]
-
-            for row_index, tr in enumerate(direct_rows):
-                cell_tags = [
-                    cell for cell in tr.find_all(["th", "td"])
-                    if cell.find_parent("table") is table_elem
-                ]
-                if not cell_tags:
-                    continue
-
-                cells = []
-                for col_index, cell in enumerate(cell_tags):
-                    cell_text = _normalize_text(cell.get_text(" ", strip=True))
-                    cell_runs = _extract_runs(cell)
-                    try:
-                        cs = int(cell.get("colspan", 1) or 1)
-                    except (ValueError, TypeError):
-                        cs = 1
-                    try:
-                        rs = int(cell.get("rowspan", 1) or 1)
-                    except (ValueError, TypeError):
-                        rs = 1
-                    is_header = cell.name == "th"
-
-                    nested_table_elems = [
-                        nt for nt in cell.find_all("table")
-                        if nt.find_parent("table") is table_elem
-                    ]
-
-                    cells.append({
-                        "text": cell_text,
-                        "paragraphs": [{
-                            "index": 0,
-                            "text": cell_text,
-                            "style": None,
-                            "is_bullet": False,
-                            "is_numbered": False,
-                            "list_info": None,
-                            "numbering_format": None,
-                            "alignment": None,
-                            "runs": cell_runs if cell_runs else [_default_run(cell_text)],
-                        }],
-                        "tables": [],
-                        "cell_index": col_index,
-                        "is_header": is_header,
-                        "colspan": cs,
-                        "rowspan": rs,
-                        "_nested_elems": nested_table_elems,
-                        "nested_table_indices": [],
-                    })
-
-                max_cols = max(max_cols, len(cells))
-                table_rows.append({"row_index": row_index, "cells": cells})
-
-            if not table_rows:
-                return
-
-            current_index = table_index
-            tables.append({
-                "index": current_index,
-                "row_count": len(table_rows),
-                "column_count": max_cols,
-                "style": None,
-                "rows": table_rows,
-                "source": {"format": "html"},
-            })
-            document_order.append({"type": "table", "index": current_index})
-            table_index += 1
-
-            for row in table_rows:
-                for cell in row["cells"]:
-                    nested_elems = cell.pop("_nested_elems", [])
-                    for nt in nested_elems:
-                        pre_idx = table_index
-                        add_table(nt)
-                        if table_index > pre_idx:
-                            cell["nested_table_indices"].append(pre_idx)
-
-        def walk_list(list_elem: Tag, *, list_level: int = 0) -> None:
-            is_bullet = list_elem.name.lower() == "ul"
-            try:
-                start = int(list_elem.get("start", 1)
-                            or 1) if not is_bullet else 1
-            except (ValueError, TypeError):
-                start = 1
-            current_number = start
-
-            for li in list_elem.find_all("li", recursive=False):
-                numbering_format = "bullet" if is_bullet else f"{current_number}."
-
-                add_paragraph_from_element(
-                    li,
-                    is_bullet=is_bullet,
-                    is_numbered=not is_bullet,
-                    numbering_format=numbering_format,
-                    list_level=list_level,
-                    list_start=start if not is_bullet else None,
-                )
-
-                for child in li.children:
-                    if isinstance(child, Tag):
-                        cname = child.name.lower()
-                        if cname in {"ul", "ol"}:
-                            walk_list(child, list_level=list_level + 1)
-                        elif cname == "table":
-                            add_table(child)
-
-                current_number += 1
-
-        def add_paragraph_direct(runs: list[dict], text: str) -> None:
-            nonlocal paragraph_index
-            if not text:
-                return
-            paragraphs.append({
-                "index": paragraph_index,
-                "text": text,
-                "style": None,
-                "is_bullet": False,
-                "is_numbered": False,
-                "list_info": None,
-                "numbering_format": None,
-                "list_level": None,
-                "alignment": None,
-                "direction": None,
-                "runs": runs if runs else [_default_run(text)],
-                "source": {"format": "html"},
-            })
-            document_order.append(
-                {"type": "paragraph", "index": paragraph_index})
-            paragraph_index += 1
-
-        def walk(parent: Tag) -> None:
-            nonlocal paragraph_index
-            for child in parent.children:
-                if isinstance(child, NavigableString):
-                    txt = _normalize_text(str(child))
-                    if txt:
-                        add_paragraph_direct([_default_run(txt)], txt)
-                    continue
-
-                if not isinstance(child, Tag):
-                    continue
-
-                name = child.name.lower()
-
-                if name in {"script", "style", "noscript", "meta", "link", "br"}:
-                    continue
-
-                if name == "hr":
-                    paragraphs.append({
-                        "index": paragraph_index,
-                        "text": "---",
-                        "style": "HorizontalRule",
-                        "is_bullet": False,
-                        "is_numbered": False,
-                        "list_info": None,
-                        "numbering_format": None,
-                        "list_level": None,
-                        "alignment": "CENTER",
-                        "direction": None,
-                        "runs": [_default_run("---")],
-                        "source": {"format": "html"},
-                    })
-                    document_order.append(
-                        {"type": "paragraph", "index": paragraph_index})
-                    paragraph_index += 1
-                    continue
-
-                if name == "img":
-                    add_media(child)
-                    continue
-
-                if name == "table":
-                    add_table(child)
-                    continue
-
-                if name in {"ul", "ol"}:
-                    walk_list(child, list_level=0)
-                    continue
-
-                if name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
-                    add_paragraph_from_element(
-                        child, heading_level=int(name[1]))
-                    continue
-
-                if name == "p":
-                    block_children = [
-                        c for c in child.children
-                        if isinstance(c, Tag) and c.name.lower() in {"ul", "ol", "table", "img"}
-                    ]
-                    if block_children:
-                        text_only_runs = _extract_runs_skip_blocks(child)
-                        text_only = "".join((r.get("text") or "")
-                                            for r in text_only_runs).strip()
-                        if text_only:
-                            add_paragraph_direct(text_only_runs, text_only)
-                        for bc in block_children:
-                            bcname = bc.name.lower()
-                            if bcname in {"ul", "ol"}:
-                                walk_list(bc, list_level=0)
-                            elif bcname == "table":
-                                add_table(bc)
-                            elif bcname == "img":
-                                add_media(bc)
-                    else:
-                        add_paragraph_from_element(child)
-                    continue
-
-                if name in {"blockquote", "pre"}:
-                    add_paragraph_from_element(child)
-                    continue
-
-                if name in {"div", "section", "article", "main", "header",
-                            "footer", "aside", "nav", "figure", "figcaption"}:
-                    elem_dir = (child.get("dir") or "").lower()
-                    inline_style = child.get("style") or ""
-                    m_dir = re.search(
-                        r"\bdirection\s*:\s*(\w+)", inline_style, re.I)
-                    elem_text = child.get_text()
-                    has_arabic = bool(re.search(
-                        r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]", elem_text))
-                    is_rtl = (
-                        elem_dir in self._RTL_VALUES
-                        or (m_dir and m_dir.group(1).lower() in self._RTL_VALUES)
-                        or has_arabic
-                    )
-
-                    has_block_child = any(
-                        isinstance(grand, Tag) and grand.name and grand.name.lower(
-                        ) in self._BLOCK_TAGS
-                        for grand in child.children
-                    )
-                    if has_block_child:
-                        walk(child)
-                    else:
-                        add_paragraph_from_element(
-                            child, direction="rtl" if is_rtl else None)
-                    continue
-
-                txt = _normalize_text(child.get_text(" ", strip=True))
-                if txt:
-                    add_paragraph_from_element(child)
-
-        # ── run extraction helpers ────────────────────────────────────────────
-
-        def _extract_runs(element: Tag) -> list[dict[str, Any]]:
-            return _collect_runs(element, skip_block_children=False)
-
-        def _extract_runs_skip_blocks(element: Tag) -> list[dict[str, Any]]:
-            return _collect_runs(element, skip_block_children=True)
-
-        def _collect_runs(element: Tag, *, skip_block_children: bool) -> list[dict[str, Any]]:
-            runs: list[dict[str, Any]] = []
-            _BLOCK_SKIP = {"ul", "ol", "table", "img"}
-
-            def push_text(text: str, style: dict[str, Any]) -> None:
-                normalized = _normalize_text(text)
-                if not normalized:
-                    return
-                run = {
-                    "index": len(runs),
-                    "text": normalized,
-                    "bold": style.get("bold"),
-                    "italic": style.get("italic"),
-                    "underline": style.get("underline"),
-                    "strikethrough": style.get("strikethrough"),
-                    "code": style.get("code"),
-                    "color_rgb": style.get("color_rgb"),
-                    "font_name": style.get("font_name"),
-                    "font_size_pt": None,
-                    "highlight_color": None,
-                    "hyperlink_url": style.get("hyperlink_url"),
-                    "embedded_media": [],
-                }
-                if runs and _same_style(runs[-1], run):
-                    runs[-1]["text"] = f"{runs[-1]['text']} {run['text']}".strip()
-                else:
-                    run["index"] = len(runs)
-                    runs.append(run)
-
-            def rec(node: Any, style: dict[str, Any]) -> None:
-                if isinstance(node, NavigableString):
-                    push_text(str(node), style)
-                    return
-                if not isinstance(node, Tag):
-                    return
-
-                name = (node.name or "").lower()
-
-                if name in {"script", "style", "noscript"}:
-                    return
-                if skip_block_children and name in _BLOCK_SKIP:
-                    return
-                if name in {"table", "ul", "ol"}:
-                    return
-                if name == "br":
-                    push_text("\n", style)
-                    return
-
-                next_style = dict(style)
-
-                if name in {"b", "strong"}:
-                    next_style["bold"] = True
-                if name in {"i", "em"}:
-                    next_style["italic"] = True
-                if name in {"u", "ins"}:
-                    next_style["underline"] = True
-                if name in {"s", "del", "strike"}:
-                    next_style["strikethrough"] = True
-                if name in {"code", "kbd", "samp", "tt"}:
-                    next_style["code"] = True
-                if name == "a":
-                    href = (node.get("href") or "").strip()
-                    if href:
-                        next_style["hyperlink_url"] = href
-
-                inline = node.get("style") or ""
-                if inline:
-                    m_color = re.search(r"\bcolor\s*:\s*([^;]+)", inline, re.I)
-                    if m_color:
-                        next_style["color_rgb"] = _css_color_to_rgb(
-                            m_color.group(1).strip())
-                    m_font = re.search(
-                        r"\bfont-family\s*:\s*([^;]+)", inline, re.I)
-                    if m_font:
-                        font_raw = m_font.group(1).strip().strip(
-                            "'\"").split(",")[0].strip().strip("'\"")
-                        if font_raw:
-                            next_style["font_name"] = font_raw
-
-                for sub in node.children:
-                    rec(sub, next_style)
-
-            rec(element, {
-                "bold": None, "italic": None, "underline": None,
-                "strikethrough": None, "code": None,
-                "color_rgb": None, "font_name": None,
-                "hyperlink_url": None,
-            })
-            for idx, run in enumerate(runs):
-                run["index"] = idx
-            return runs
-
-        def _same_style(a: dict[str, Any], b: dict[str, Any]) -> bool:
-            keys = ("bold", "italic", "underline", "strikethrough", "code",
-                    "color_rgb", "font_name", "hyperlink_url")
-            return all(a.get(k) == b.get(k) for k in keys)
-
-        def _css_color_to_rgb(raw: str) -> str | None:
-            raw = raw.strip()
-            if raw.startswith("#"):
-                return raw
-            m_rgb = re.match(
-                r"rgb\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)", raw, re.I)
-            if m_rgb:
-                r, g, b = int(m_rgb.group(1)), int(
-                    m_rgb.group(2)), int(m_rgb.group(3))
-                return f"#{r:02x}{g:02x}{b:02x}"
-            if re.match(r"^[a-zA-Z]+$", raw):
-                return raw
-            return None
-
-        def _default_run(text: str) -> dict[str, Any]:
-            return {
-                "index": 0,
-                "text": text,
-                "bold": None,
-                "italic": None,
-                "underline": None,
-                "strikethrough": None,
-                "code": None,
-                "font_name": None,
-                "font_size_pt": None,
-                "color_rgb": None,
-                "highlight_color": None,
-                "hyperlink_url": None,
-                "embedded_media": [],
-            }
-
-        def _normalize_text(value: str) -> str:
-            if not value:
-                return ""
-            value = value.replace("\r\n", "\n").replace("\r", "\n")
-            lines = []
-            for line in value.split("\n"):
-                cleaned = re.sub(r"\s+", " ", line).strip()
-                if cleaned:
-                    lines.append(cleaned)
-            return "\n".join(lines)
-
-        walk(root)
+        state = _ExtractionState()
+        self._walk(state, root)
 
         title_tag = soup.title
         title_text = (title_tag.string.strip()
@@ -532,10 +253,395 @@ class HtmlExtractionPipeline:
                 "extraction_mode": "html",
                 "title": title_text,
             },
-            "document_order": document_order,
+            "document_order": state.document_order,
             "document_defaults": None,
             "styles": [],
-            "paragraphs": paragraphs,
-            "tables": tables,
-            "media": media,
+            "paragraphs": state.paragraphs,
+            "tables": state.tables,
+            "media": state.media,
         }
+
+    # ── Direction detection ───────────────────────────────────────────────────
+
+    def _detect_direction(
+        self,
+        elem: Tag,
+        text: str,
+        direction: str | None,
+    ) -> str | None:
+        if direction:
+            return direction
+        elem_dir = (elem.get("dir") or "").lower()
+        inline_style = elem.get("style") or ""
+        m_dir = re.search(r"\bdirection\s*:\s*(\w+)", inline_style, re.I)
+        if (
+            elem_dir in self._RTL_VALUES
+            or (m_dir and m_dir.group(1).lower() in self._RTL_VALUES)
+            or re.search(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]", text)
+        ):
+            return "rtl"
+        return None
+
+    # ── Paragraph helpers ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_list_info(
+        is_bullet: bool,
+        is_numbered: bool,
+        numbering_format: str | None,
+        list_level: int,
+        list_start: int | None,
+    ) -> dict[str, Any] | None:
+        if not (is_bullet or is_numbered):
+            return None
+        kind = "bullet" if is_bullet else "numbered"
+        return {
+            "kind": kind,
+            "numbering_format": numbering_format,
+            "level": list_level,
+            "start": list_start,
+        }
+
+    def _add_paragraph(
+        self,
+        state: _ExtractionState,
+        *,
+        text: str,
+        runs: list[dict[str, Any]],
+        style: str | None = None,
+        is_bullet: bool = False,
+        is_numbered: bool = False,
+        numbering_format: str | None = None,
+        list_level: int = 0,
+        list_start: int | None = None,
+        alignment: str | None = None,
+        direction: str | None = None,
+    ) -> None:
+        list_info = self._make_list_info(
+            is_bullet, is_numbered, numbering_format, list_level, list_start
+        )
+        state.paragraphs.append({
+            "index": state.paragraph_index,
+            "text": text,
+            "style": style,
+            "is_bullet": is_bullet,
+            "is_numbered": is_numbered,
+            "list_info": list_info,
+            "numbering_format": numbering_format,
+            "list_level": list_level if (is_bullet or is_numbered) else None,
+            "alignment": alignment,
+            "direction": direction,
+            "runs": runs if runs else [_default_run(text)],
+            "source": {"format": "html"},
+        })
+        state.document_order.append(
+            {"type": "paragraph", "index": state.paragraph_index}
+        )
+        state.paragraph_index += 1
+
+    def _add_paragraph_from_element(
+        self,
+        state: _ExtractionState,
+        elem: Tag,
+        *,
+        heading_level: int | None = None,
+        is_bullet: bool = False,
+        is_numbered: bool = False,
+        numbering_format: str | None = None,
+        list_level: int = 0,
+        list_start: int | None = None,
+        direction: str | None = None,
+    ) -> None:
+        runs = _extract_runs(elem)
+        text = "".join((run.get("text") or "") for run in runs).strip()
+        if not text:
+            return
+        style = f"Heading {heading_level}" if heading_level else None
+        direction = self._detect_direction(elem, text, direction)
+        self._add_paragraph(
+            state,
+            text=text,
+            runs=runs,
+            style=style,
+            is_bullet=is_bullet,
+            is_numbered=is_numbered,
+            numbering_format=numbering_format,
+            list_level=list_level,
+            list_start=list_start,
+            direction=direction,
+        )
+
+    def _add_paragraph_direct(
+        self,
+        state: _ExtractionState,
+        runs: list[dict[str, Any]],
+        text: str,
+    ) -> None:
+        if not text:
+            return
+        self._add_paragraph(state, text=text, runs=runs)
+
+    def _add_horizontal_rule(self, state: _ExtractionState) -> None:
+        self._add_paragraph(
+            state,
+            text="---",
+            runs=[_default_run("---")],
+            style="HorizontalRule",
+            alignment="CENTER",
+        )
+
+    # ── Media ─────────────────────────────────────────────────────────────────
+
+    def _add_media(self, state: _ExtractionState, image_elem: Tag) -> None:
+        src = (image_elem.get("src") or "").strip()
+        if not src:
+            return
+        w = image_elem.get("width", "")
+        h = image_elem.get("height", "")
+        state.media.append({
+            "relationship_id": f"html_img_{state.media_index}",
+            "content_type": None,
+            "file_name": src.split("/")[-1],
+            "local_file_path": src,
+            "local_url": src,
+            "width_emu": int(w) if str(w).isdigit() else None,
+            "height_emu": int(h) if str(h).isdigit() else None,
+            "alt_text": (image_elem.get("alt") or "").strip() or None,
+        })
+        state.document_order.append(
+            {"type": "media", "index": state.media_index})
+        state.media_index += 1
+
+    # ── Table ─────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_cell_span(cell: Tag) -> tuple[int, int]:
+        """Return (colspan, rowspan) for a table cell."""
+        try:
+            cs = int(cell.get("colspan", 1) or 1)
+        except (ValueError, TypeError):
+            cs = 1
+        try:
+            rs = int(cell.get("rowspan", 1) or 1)
+        except (ValueError, TypeError):
+            rs = 1
+        return cs, rs
+
+    def _build_cell(
+        self,
+        cell: Tag,
+        col_index: int,
+        table_elem: Tag,
+    ) -> dict[str, Any]:
+        cell_text = _normalize_text(cell.get_text(" ", strip=True))
+        cell_runs = _extract_runs(cell)
+        cs, rs = self._parse_cell_span(cell)
+        nested_table_elems = [
+            nt for nt in cell.find_all("table")
+            if nt.find_parent("table") is table_elem
+        ]
+        return {
+            "text": cell_text,
+            "paragraphs": [{
+                "index": 0,
+                "text": cell_text,
+                "style": None,
+                "is_bullet": False,
+                "is_numbered": False,
+                "list_info": None,
+                "numbering_format": None,
+                "alignment": None,
+                "runs": cell_runs if cell_runs else [_default_run(cell_text)],
+            }],
+            "tables": [],
+            "cell_index": col_index,
+            "is_header": cell.name == "th",
+            "colspan": cs,
+            "rowspan": rs,
+            "_nested_elems": nested_table_elems,
+            "nested_table_indices": [],
+        }
+
+    def _add_table(self, state: _ExtractionState, table_elem: Tag) -> None:
+        table_id = id(table_elem)
+        if table_id in state.seen_tables:
+            return
+        state.seen_tables.add(table_id)
+
+        table_rows: list[dict[str, Any]] = []
+        max_cols = 0
+
+        direct_rows = [
+            tr for tr in table_elem.find_all("tr")
+            if tr.find_parent("table") is table_elem
+        ]
+
+        for row_index, tr in enumerate(direct_rows):
+            cell_tags = [
+                cell for cell in tr.find_all(["th", "td"])
+                if cell.find_parent("table") is table_elem
+            ]
+            if not cell_tags:
+                continue
+            cells = [
+                self._build_cell(cell, col_index, table_elem)
+                for col_index, cell in enumerate(cell_tags)
+            ]
+            max_cols = max(max_cols, len(cells))
+            table_rows.append({"row_index": row_index, "cells": cells})
+
+        if not table_rows:
+            return
+
+        current_index = state.table_index
+        state.tables.append({
+            "index": current_index,
+            "row_count": len(table_rows),
+            "column_count": max_cols,
+            "style": None,
+            "rows": table_rows,
+            "source": {"format": "html"},
+        })
+        state.document_order.append({"type": "table", "index": current_index})
+        state.table_index += 1
+
+        for row in table_rows:
+            for cell in row["cells"]:
+                nested_elems = cell.pop("_nested_elems", [])
+                for nt in nested_elems:
+                    pre_idx = state.table_index
+                    self._add_table(state, nt)
+                    if state.table_index > pre_idx:
+                        cell["nested_table_indices"].append(pre_idx)
+
+    # ── List ──────────────────────────────────────────────────────────────────
+
+    def _walk_list_item_children(
+        self, state: _ExtractionState, li: Tag, *, list_level: int
+    ) -> None:
+        """Process nested block-level children of a list item."""
+        for child in li.children:
+            if not isinstance(child, Tag):
+                continue
+            cname = child.name.lower()
+            if cname in {"ul", "ol"}:
+                self._walk_list(state, child, list_level=list_level + 1)
+            elif cname == "table":
+                self._add_table(state, child)
+
+    def _walk_list(
+        self,
+        state: _ExtractionState,
+        list_elem: Tag,
+        *,
+        list_level: int = 0,
+    ) -> None:
+        is_bullet = list_elem.name.lower() == "ul"
+        try:
+            start = int(list_elem.get("start", 1) or 1) if not is_bullet else 1
+        except (ValueError, TypeError):
+            start = 1
+        current_number = start
+
+        for li in list_elem.find_all("li", recursive=False):
+            numbering_format = "bullet" if is_bullet else f"{current_number}."
+            self._add_paragraph_from_element(
+                state,
+                li,
+                is_bullet=is_bullet,
+                is_numbered=not is_bullet,
+                numbering_format=numbering_format,
+                list_level=list_level,
+                list_start=start if not is_bullet else None,
+            )
+            self._walk_list_item_children(state, li, list_level=list_level)
+            current_number += 1
+
+    # ── Walkers ───────────────────────────────────────────────────────────────
+
+    def _walk_paragraph(self, state: _ExtractionState, child: Tag) -> None:
+        block_children = [
+            c for c in child.children
+            if isinstance(c, Tag) and c.name.lower() in {"ul", "ol", "table", "img"}
+        ]
+        if block_children:
+            text_only_runs = _extract_runs_skip_blocks(child)
+            text_only = "".join((r.get("text") or "")
+                                for r in text_only_runs).strip()
+            if text_only:
+                self._add_paragraph_direct(state, text_only_runs, text_only)
+            for bc in block_children:
+                bcname = bc.name.lower()
+                if bcname in {"ul", "ol"}:
+                    self._walk_list(state, bc, list_level=0)
+                elif bcname == "table":
+                    self._add_table(state, bc)
+                elif bcname == "img":
+                    self._add_media(state, bc)
+        else:
+            self._add_paragraph_from_element(state, child)
+
+    def _walk_div_like(self, state: _ExtractionState, child: Tag) -> None:
+        has_block_child = any(
+            isinstance(grand, Tag) and grand.name
+            and grand.name.lower() in self._BLOCK_TAGS
+            for grand in child.children
+        )
+        if has_block_child:
+            self._walk(state, child)
+        else:
+            self._add_paragraph_from_element(
+                state, child, direction="rtl" if _is_element_rtl(
+                    child) else None
+            )
+
+    def _dispatch_tag_child(
+        self, state: _ExtractionState, child: Tag, name: str
+    ) -> bool:
+        """Dispatch a Tag to the appropriate handler. Return True if handled."""
+        if name in {"script", "style", "noscript", "meta", "link", "br"}:
+            return True
+        if name == "hr":
+            self._add_horizontal_rule(state)
+            return True
+        if name == "img":
+            self._add_media(state, child)
+            return True
+        if name == "table":
+            self._add_table(state, child)
+            return True
+        if name in {"ul", "ol"}:
+            self._walk_list(state, child, list_level=0)
+            return True
+        if name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            self._add_paragraph_from_element(
+                state, child, heading_level=int(name[1])
+            )
+            return True
+        if name == "p":
+            self._walk_paragraph(state, child)
+            return True
+        if name in {"blockquote", "pre"}:
+            self._add_paragraph_from_element(state, child)
+            return True
+        if name in {"div", "section", "article", "main", "header",
+                    "footer", "aside", "nav", "figure", "figcaption"}:
+            self._walk_div_like(state, child)
+            return True
+        return False
+
+    def _walk(self, state: _ExtractionState, parent: Tag) -> None:
+        for child in parent.children:
+            if isinstance(child, NavigableString):
+                txt = _normalize_text(str(child))
+                if txt:
+                    self._add_paragraph_direct(state, [_default_run(txt)], txt)
+                continue
+            if not isinstance(child, Tag):
+                continue
+            name = child.name.lower()
+            if self._dispatch_tag_child(state, child, name):
+                continue
+            txt = _normalize_text(child.get_text(" ", strip=True))
+            if txt:
+                self._add_paragraph_from_element(state, child)

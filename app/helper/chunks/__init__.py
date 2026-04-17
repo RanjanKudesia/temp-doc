@@ -57,11 +57,14 @@ def create_chunks(request_data: dict) -> ChunkResponse:
     )
     normalized_extension = _normalize_extension(str(source_extension))
 
-    _SUPPORTED_CHUNK_FORMATS = {"docx", "pptx", "pdf", "markdown", "text"}
-    if normalized_extension not in _SUPPORTED_CHUNK_FORMATS:
+    supported_chunk_formats = {"docx", "pptx", "pdf", "markdown", "text"}
+    if normalized_extension not in supported_chunk_formats:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="The /chunks endpoint supports docx, pdf, pptx, markdown, and txt extracted JSON only.",
+            detail=(
+                "The /chunks endpoint supports docx, pdf, pptx, markdown, "
+                "and txt extracted JSON only."
+            ),
         )
 
     try:

@@ -44,5 +44,5 @@ class PdfConversionPipeline:
             return self.docx_pipeline.run(docx_bytes)
 
         except Exception as e:
-            self.logger.error(f"PDF conversion failed: {str(e)}")
+            self.logger.error("PDF conversion failed: %s", e)
             raise ValueError(f"Failed to convert PDF: {str(e)}") from e

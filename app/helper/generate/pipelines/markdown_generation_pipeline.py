@@ -32,22 +32,42 @@ class MarkdownGenerationPipeline:
             parts.append(f"# {title}")
 
         if data.document_order:
-            for item in data.document_order:
-                if item.type == "paragraph":
-                    p = paragraph_by_index.get(item.index)
-                    if p is not None:
-                        parts.append(self._paragraph_to_md(p))
-                elif item.type == "table":
-                    t = table_by_index.get(item.index)
-                    if t is not None:
-                        parts.append(self._table_to_md(t))
-        else:
-            for p in sorted(data.paragraphs, key=lambda x: x.index):
-                parts.append(self._paragraph_to_md(p))
-            for t in sorted(data.tables, key=lambda x: x.index):
-                parts.append(self._table_to_md(t))
+            self._append_parts_in_order(
+                data,
+                parts,
+                paragraph_by_index,
+                table_by_index,
+            )
+            return parts
+
+        self._append_parts_sorted(data, parts)
 
         return parts
+
+    def _append_parts_in_order(
+        self,
+        data: ExtractedData,
+        parts: list[str],
+        paragraph_by_index: dict,
+        table_by_index: dict,
+    ) -> None:
+        """Append markdown parts following explicit document order."""
+        for item in data.document_order:
+            if item.type == "paragraph":
+                paragraph = paragraph_by_index.get(item.index)
+                if paragraph is not None:
+                    parts.append(self._paragraph_to_md(paragraph))
+            elif item.type == "table":
+                table = table_by_index.get(item.index)
+                if table is not None:
+                    parts.append(self._table_to_md(table))
+
+    def _append_parts_sorted(self, data: ExtractedData, parts: list[str]) -> None:
+        """Append markdown parts in index order when no document_order is provided."""
+        for paragraph in sorted(data.paragraphs, key=lambda item: item.index):
+            parts.append(self._paragraph_to_md(paragraph))
+        for table in sorted(data.tables, key=lambda item: item.index):
+            parts.append(self._table_to_md(table))
 
     def _paragraph_to_md(self, paragraph) -> str:
         heading_level = self._heading_level(paragraph.style)

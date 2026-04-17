@@ -5,7 +5,7 @@ Usage (in a route):
 
     @router.post("/generate")
     async def generate_file(request_body: dict) -> Response:
-        file_bytes, mime_type, filename = await generate_document(request_body)
+        file_bytes, mime_type, filename = generate_document(request_body)
         return Response(
             content=file_bytes,
             media_type=mime_type,
@@ -52,8 +52,10 @@ _EXTENSION_MAP = {
     "text": ("text/plain", "txt"),
 }
 
+_NON_GENERATION_FORMATS = {"json", "xml"}
 
-async def generate_document(
+
+def generate_document(
     request_data: dict,
 ) -> tuple[bytes, str, str]:
     """Generate document from extracted JSON data.
@@ -82,11 +84,17 @@ async def generate_document(
             detail="Missing 'extracted_data' in request body.",
         )
 
-    requested_format = (
-        request_data.get("target_format")
-        or request_data.get("output_format")
-        or _infer_format_from_extension(request_data.get("extension"))
-    )
+    requested_format = _coerce_generation_format(
+        request_data.get("target_format"))
+    if requested_format is None:
+        requested_format = _coerce_generation_format(
+            request_data.get("output_format"))
+    if requested_format is None:
+        requested_format = _infer_format_from_extracted_payload(
+            extracted_data_payload)
+    if requested_format is None:
+        requested_format = _infer_format_from_extension(
+            request_data.get("extension"))
 
     # Normalize format
     normalized_format = _normalize_format(requested_format)
@@ -179,3 +187,27 @@ def _infer_format_from_extension(ext: str | None) -> str:
     if ext == "txt":
         return "text"
     return "docx"
+
+
+def _infer_format_from_extracted_payload(payload: object) -> str | None:
+    """Infer generation format from extracted payload metadata when possible."""
+    if not isinstance(payload, dict):
+        return None
+
+    doc_type = payload.get("document_type")
+    if doc_type is None:
+        return None
+
+    normalized = _normalize_format(str(doc_type))
+    return normalized if normalized in _EXTENSION_MAP else None
+
+
+def _coerce_generation_format(fmt: object) -> str | None:
+    """Return a valid generation format, ignoring non-generation values."""
+    if fmt is None:
+        return None
+
+    normalized = _normalize_format(str(fmt))
+    if str(fmt).lower().strip() in _NON_GENERATION_FORMATS:
+        return None
+    return normalized if normalized in _EXTENSION_MAP else None

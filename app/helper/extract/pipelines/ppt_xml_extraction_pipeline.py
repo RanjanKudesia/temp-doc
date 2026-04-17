@@ -1,3 +1,5 @@
+"""PowerPoint XML extraction pipeline for temp-doc service."""
+
 import base64
 from io import BytesIO
 from pathlib import Path
@@ -30,6 +32,7 @@ class PptXmlExtractionPipeline:
     """
 
     def run(self, file_bytes: bytes, output_basename: str) -> tuple[dict[str, Any], str]:
+        """Extract and parse PPTX archive, returning XML metadata and path."""
         if not is_zipfile(BytesIO(file_bytes)):
             raise ValueError(
                 "Invalid PPTX file: not a valid ZIP archive. File may be corrupted."
@@ -142,7 +145,12 @@ class PptXmlExtractionPipeline:
 
         try:
             root = etree.fromstring(rels_xml.encode("utf-8"))
-        except (etree.XMLSyntaxError, ValueError, TypeError):
+        except (
+            # pylint: disable=c-extension-no-member
+            etree.XMLSyntaxError,
+            ValueError,
+            TypeError,
+        ):
             return {}
 
         relationships: dict[str, dict[str, str]] = {}
@@ -164,7 +172,12 @@ class PptXmlExtractionPipeline:
 
         try:
             root = etree.fromstring(xml.encode("utf-8"))
-        except (etree.XMLSyntaxError, ValueError, TypeError):
+        except (
+            # pylint: disable=c-extension-no-member
+            etree.XMLSyntaxError,
+            ValueError,
+            TypeError,
+        ):
             return {"slide_size": None, "notes_size": None, "slide_id_list": []}
 
         slide_size = None
@@ -230,7 +243,12 @@ class PptXmlExtractionPipeline:
 
             try:
                 root = etree.fromstring(slide_xml.encode("utf-8"))
-            except (etree.XMLSyntaxError, ValueError, TypeError):
+            except (
+                # pylint: disable=c-extension-no-member
+                etree.XMLSyntaxError,
+                ValueError,
+                TypeError,
+            ):
                 slides.append(
                     {
                         "index": index,
@@ -265,15 +283,71 @@ class PptXmlExtractionPipeline:
 
         return slides
 
+    def _process_shape_child(
+        self,
+        local: str,
+        child: Any,
+        draw_index: int,
+        slide_path: str,
+        slide_rels: dict[str, dict[str, str]],
+        media_bytes_by_path: dict[str, str],
+        shapes: list[dict[str, Any]],
+        slide_text_chunks: list[str],
+        counts: dict[str, int],
+    ) -> str | None:
+        """Process a single shape child element. Return title text if found."""
+        if local == "sp":
+            parsed = self._extract_shape_text(child)
+            parsed["kind"] = "shape"
+            parsed["draw_order"] = draw_index
+            shapes.append(parsed)
+            text = (parsed.get("text") or "").strip()
+            if text:
+                slide_text_chunks.append(text)
+            if parsed.get("is_title") and text:
+                return text
+        elif local == "pic":
+            parsed_pic = self._extract_picture(
+                pic_el=child,
+                slide_path=slide_path,
+                slide_rels=slide_rels,
+                media_bytes_by_path=media_bytes_by_path,
+            )
+            parsed_pic["kind"] = "picture"
+            parsed_pic["draw_order"] = draw_index
+            shapes.append(parsed_pic)
+            counts["images"] += 1
+        elif local == "graphicFrame":
+            parsed_graphic = self._extract_graphic_frame(
+                frame_el=child,
+                slide_path=slide_path,
+                slide_rels=slide_rels,
+            )
+            parsed_graphic["kind"] = "graphic_frame"
+            parsed_graphic["draw_order"] = draw_index
+            shapes.append(parsed_graphic)
+            if parsed_graphic.get("graphic_type") == "table":
+                counts["tables"] += 1
+        elif local == "grpSp":
+            parsed_group = self._extract_group_shape(child)
+            parsed_group["kind"] = "group_shape"
+            parsed_group["draw_order"] = draw_index
+            shapes.append(parsed_group)
+        elif local not in {"spTree", "nvGrpSpPr", "grpSpPr"}:
+            shapes.append(
+                {"kind": "unknown", "draw_order": draw_index, "xml_tag": local}
+            )
+        return None
+
     def _extract_slide_content(
         self,
-        root,
+        root: Any,
         slide_path: str,
         slide_rels: dict[str, dict[str, str]],
         parts_by_path: dict[str, str],
         media_bytes_by_path: dict[str, str],
     ) -> dict[str, Any]:
-        title = None
+        """Extract slide content from XML root."""
         notes = self._extract_slide_notes(
             slide_path=slide_path,
             slide_rels=slide_rels,
@@ -283,75 +357,36 @@ class PptXmlExtractionPipeline:
         shape_tree = root.find("p:cSld/p:spTree", NS)
         shapes: list[dict[str, Any]] = []
         slide_text_chunks: list[str] = []
-        image_count = 0
-        table_count = 0
+        counts = {"images": 0, "tables": 0}
+        title = None
 
         if shape_tree is not None:
             for draw_index, child in enumerate(shape_tree):
-                local = child.tag.rsplit(
-                    "}", 1)[-1] if "}" in child.tag else child.tag
-
-                if local == "sp":
-                    parsed = self._extract_shape_text(child)
-                    parsed["kind"] = "shape"
-                    parsed["draw_order"] = draw_index
-                    shapes.append(parsed)
-                    text = (parsed.get("text") or "").strip()
-                    if text:
-                        slide_text_chunks.append(text)
-                    if parsed.get("is_title") and text and title is None:
-                        title = text
-
-                elif local == "pic":
-                    parsed_pic = self._extract_picture(
-                        pic_el=child,
-                        slide_path=slide_path,
-                        slide_rels=slide_rels,
-                        media_bytes_by_path=media_bytes_by_path,
-                    )
-                    parsed_pic["kind"] = "picture"
-                    parsed_pic["draw_order"] = draw_index
-                    shapes.append(parsed_pic)
-                    image_count += 1
-
-                elif local == "graphicFrame":
-                    parsed_graphic = self._extract_graphic_frame(
-                        frame_el=child,
-                        slide_path=slide_path,
-                        slide_rels=slide_rels,
-                    )
-                    parsed_graphic["kind"] = "graphic_frame"
-                    parsed_graphic["draw_order"] = draw_index
-                    shapes.append(parsed_graphic)
-
-                    if parsed_graphic.get("graphic_type") == "table":
-                        table_count += 1
-
-                elif local == "grpSp":
-                    parsed_group = self._extract_group_shape(child)
-                    parsed_group["kind"] = "group_shape"
-                    parsed_group["draw_order"] = draw_index
-                    shapes.append(parsed_group)
-
-                elif local in {"spTree", "nvGrpSpPr", "grpSpPr"}:
-                    # container internals, skip explicit record
-                    continue
-
-                else:
-                    shapes.append(
-                        {
-                            "kind": "unknown",
-                            "draw_order": draw_index,
-                            "xml_tag": local,
-                        }
-                    )
+                local = (
+                    child.tag.rsplit("}", 1)[-1]
+                    if "}" in child.tag
+                    else child.tag
+                )
+                result = self._process_shape_child(
+                    local=local,
+                    child=child,
+                    draw_index=draw_index,
+                    slide_path=slide_path,
+                    slide_rels=slide_rels,
+                    media_bytes_by_path=media_bytes_by_path,
+                    shapes=shapes,
+                    slide_text_chunks=slide_text_chunks,
+                    counts=counts,
+                )
+                if result is not None and title is None:
+                    title = result
 
         return {
             "title": title,
             "text": "\n".join(slide_text_chunks),
             "shape_count": len(shapes),
-            "image_count": image_count,
-            "table_count": table_count,
+            "image_count": counts["images"],
+            "table_count": counts["tables"],
             "shapes": shapes,
             "notes": notes,
         }
@@ -384,23 +419,17 @@ class PptXmlExtractionPipeline:
             "paragraphs": paragraphs,
         }
 
-    def _extract_text_paragraph(self, p_el) -> dict[str, Any]:
-        runs: list[dict[str, Any]] = []
-        text_chunks: list[str] = []
-
-        ppr = p_el.find("a:pPr", NS)
-        level = self._as_int(ppr.get("lvl")) if ppr is not None else None
-        align = ppr.get("algn") if ppr is not None else None
-
-        run_index = 0
-        for child in p_el:
-            local = child.tag.rsplit(
-                "}", 1)[-1] if "}" in child.tag else child.tag
-            if local == "r":
-                t = child.find("a:t", NS)
-                text = t.text if t is not None and t.text is not None else ""
-                rpr = child.find("a:rPr", NS)
-                run = {
+    def _process_text_run(self, child: Any, run_index: int) -> tuple[
+        dict[str, Any] | None, str, int
+    ]:
+        """Process a single text run element. Return (run_dict or None, text, new_index)."""
+        local = child.tag.rsplit("}", 1)[-1] if "}" in child.tag else child.tag
+        if local == "r":
+            t = child.find("a:t", NS)
+            text = t.text if t is not None and t.text is not None else ""
+            rpr = child.find("a:rPr", NS)
+            return (
+                {
                     "index": run_index,
                     "text": text,
                     "bold": self._bool_attr(rpr, "b"),
@@ -409,28 +438,47 @@ class PptXmlExtractionPipeline:
                     "font_size_pt": self._font_size_pt(rpr),
                     "color_rgb": self._run_color(rpr),
                     "language": rpr.get("lang") if rpr is not None else None,
-                }
-                runs.append(run)
+                },
+                text,
+                run_index + 1,
+            )
+        if local == "br":
+            return (
+                {"index": run_index, "text": "\n", "line_break": True},
+                "\n",
+                run_index + 1,
+            )
+        if local == "fld":
+            t = child.find("a:t", NS)
+            text = t.text if t is not None and t.text is not None else ""
+            return (
+                {
+                    "index": run_index,
+                    "text": text,
+                    "field_id": child.get("id"),
+                    "field_type": child.get("type"),
+                },
+                text,
+                run_index + 1,
+            )
+        return None, "", run_index
+
+    def _extract_text_paragraph(self, p_el: Any) -> dict[str, Any]:
+        """Extract paragraph with runs from text body element."""
+        ppr = p_el.find("a:pPr", NS)
+        level = self._as_int(ppr.get("lvl")) if ppr is not None else None
+        align = ppr.get("algn") if ppr is not None else None
+
+        runs: list[dict[str, Any]] = []
+        text_chunks: list[str] = []
+        run_index = 0
+
+        for child in p_el:
+            run_dict, text, run_index = self._process_text_run(
+                child, run_index)
+            if run_dict is not None:
+                runs.append(run_dict)
                 text_chunks.append(text)
-                run_index += 1
-            elif local == "br":
-                runs.append(
-                    {"index": run_index, "text": "\n", "line_break": True})
-                text_chunks.append("\n")
-                run_index += 1
-            elif local == "fld":
-                t = child.find("a:t", NS)
-                text = t.text if t is not None and t.text is not None else ""
-                runs.append(
-                    {
-                        "index": run_index,
-                        "text": text,
-                        "field_id": child.get("id"),
-                        "field_type": child.get("type"),
-                    }
-                )
-                text_chunks.append(text)
-                run_index += 1
 
         return {
             "level": level,
@@ -599,8 +647,9 @@ class PptXmlExtractionPipeline:
         slide_rels: dict[str, dict[str, str]],
         parts_by_path: dict[str, str],
     ) -> dict[str, Any] | None:
+        """Extract notes from slide relationships."""
         notes_rel = None
-        for _, rel in slide_rels.items():
+        for rel in slide_rels.values():
             rel_type = rel.get("type") or ""
             if rel_type.endswith("/notesSlide"):
                 notes_rel = rel
@@ -625,7 +674,12 @@ class PptXmlExtractionPipeline:
 
         try:
             root = etree.fromstring(notes_xml.encode("utf-8"))
-        except (etree.XMLSyntaxError, ValueError, TypeError):
+        except (
+            # pylint: disable=c-extension-no-member
+            etree.XMLSyntaxError,
+            ValueError,
+            TypeError,
+        ):
             return {
                 "path": notes_path,
                 "text": "",

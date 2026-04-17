@@ -29,30 +29,56 @@ class TextGenerationPipeline:
             lines.append("")
 
         if data.document_order:
-            for item in data.document_order:
-                if item.type == "paragraph":
-                    p = paragraph_by_index.get(item.index)
-                    if p is not None:
-                        lines.append((p.text or "").strip())
-                        lines.append("")
-                elif item.type == "table":
-                    t = table_by_index.get(item.index)
-                    if t is not None:
-                        rows = [[(cell.text or "") for cell in row.cells]
-                                for row in t.rows]
-                        lines.extend(self._table_to_text(rows))
-                        lines.append("")
-        else:
-            for p in sorted(data.paragraphs, key=lambda x: x.index):
-                lines.append((p.text or "").strip())
-                lines.append("")
-            for t in sorted(data.tables, key=lambda x: x.index):
-                rows = [[(cell.text or "") for cell in row.cells]
-                        for row in t.rows]
-                lines.extend(self._table_to_text(rows))
-                lines.append("")
+            self._append_lines_from_order(
+                data,
+                paragraph_by_index,
+                table_by_index,
+                lines,
+            )
+            return lines
+
+        self._append_lines_from_sorted(data, lines)
 
         return lines
+
+    def _append_lines_from_order(
+        self,
+        data: ExtractedData,
+        paragraph_by_index: dict,
+        table_by_index: dict,
+        lines: list[str],
+    ) -> None:
+        """Append lines using explicit document order."""
+        for item in data.document_order:
+            if item.type == "paragraph":
+                paragraph = paragraph_by_index.get(item.index)
+                self._append_paragraph_line(paragraph, lines)
+            elif item.type == "table":
+                table = table_by_index.get(item.index)
+                self._append_table_lines(table, lines)
+
+    def _append_lines_from_sorted(self, data: ExtractedData, lines: list[str]) -> None:
+        """Append lines using sorted paragraphs/tables by index."""
+        for paragraph in sorted(data.paragraphs, key=lambda item: item.index):
+            self._append_paragraph_line(paragraph, lines)
+        for table in sorted(data.tables, key=lambda item: item.index):
+            self._append_table_lines(table, lines)
+
+    def _append_paragraph_line(self, paragraph, lines: list[str]) -> None:
+        """Append a single paragraph and blank separator line."""
+        if paragraph is None:
+            return
+        lines.append((paragraph.text or "").strip())
+        lines.append("")
+
+    def _append_table_lines(self, table, lines: list[str]) -> None:
+        """Append a table as text rows and blank separator line."""
+        if table is None:
+            return
+        rows = [[(cell.text or "") for cell in row.cells]
+                for row in table.rows]
+        lines.extend(self._table_to_text(rows))
+        lines.append("")
 
     def _table_to_text(self, rows: list[list[str]]) -> list[str]:
         if not rows:
