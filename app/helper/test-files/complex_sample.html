@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Complex HTML Test Document</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.5;
+            margin: 24px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 16px 0;
+        }
+
+        th,
+        td {
+            border: 1px solid #444;
+            padding: 8px;
+            text-align: left;
+        }
+
+        .note {
+            background: #f2f6ff;
+            border-left: 4px solid #3b5ccc;
+            padding: 8px 12px;
+        }
+
+        .warning {
+            background: #fff5e6;
+            border-left: 4px solid #cc7a00;
+            padding: 8px 12px;
+        }
+
+        code {
+            background: #f4f4f4;
+            padding: 1px 4px;
+        }
+
+        pre {
+            background: #f4f4f4;
+            padding: 12px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>Quarterly Operations and Product Status</h1>
+        <p><strong>Prepared by:</strong> Platform Engineering</p>
+        <p><strong>Date:</strong> 2026-04-21</p>
+        <nav>
+            <a href="#summary">Summary</a> |
+            <a href="#metrics">Metrics</a> |
+            <a href="#actions">Actions</a> |
+            <a href="#appendix">Appendix</a>
+        </nav>
+    </header>
+
+    <main>
+        <section id="summary">
+            <h2>1. Executive Summary</h2>
+            <p>
+                This document contains a broad set of HTML structures for parser and editor testing,
+                including headings, nested lists, tables, forms, inline code, block code, and semantic tags.
+            </p>
+            <blockquote>
+                "Reliability is not an accident. It is a deliberate and measurable practice."
+            </blockquote>
+            <div class="note">
+                <p><strong>Note:</strong> Service uptime improved from <em>99.82%</em> to <em>99.94%</em> in the last
+                    cycle.</p>
+            </div>
+            <figure>
+                <img src="https://via.placeholder.com/320x120" alt="Placeholder banner">
+                <figcaption>Figure 1: Placeholder visual for extraction testing.</figcaption>
+            </figure>
+        </section>
+
+        <section id="metrics">
+            <h2>2. Operational Metrics</h2>
+            <h3>2.1 Topline KPI Table</h3>
+            <table>
+                <caption>System KPI Snapshot</caption>
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Current</th>
+                        <th>Target</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Availability</td>
+                        <td>99.94%</td>
+                        <td>99.90%</td>
+                        <td>On Track</td>
+                    </tr>
+                    <tr>
+                        <td>P95 API Latency</td>
+                        <td>182 ms</td>
+                        <td>&lt; 200 ms</td>
+                        <td>On Track</td>
+                    </tr>
+                    <tr>
+                        <td>Error Rate</td>
+                        <td>0.21%</td>
+                        <td>&lt; 0.30%</td>
+                        <td>On Track</td>
+                    </tr>
+                    <tr>
+                        <td>Ticket SLA Breach</td>
+                        <td>4</td>
+                        <td>&lt;= 5</td>
+                        <td>On Track</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>2.2 Nested Lists</h3>
+            <ol>
+                <li>Platform
+                    <ul>
+                        <li>Autoscaling tuned for morning traffic</li>
+                        <li>Database index cleanup complete</li>
+                        <li>Cache hit ratio improved to 92%</li>
+                    </ul>
+                </li>
+                <li>Application
+                    <ul>
+                        <li>Input validation hardened</li>
+                        <li>Retry strategy updated
+                            <ul>
+                                <li>Exponential backoff</li>
+                                <li>Maximum 4 attempts</li>
+                                <li>Jitter enabled</li>
+                            </ul>
+                        </li>
+                    </ul>
+                </li>
+            </ol>
+
+            <h3>2.3 Inline and Block Code</h3>
+            <p>
+                Health check endpoint: <code>GET /health</code>. Build command: <code>python -m unittest -v</code>.
+            </p>
+            <pre><code class="language-json">{
+  "service": "temp-doc",
+  "environment": "staging",
+  "build": "2026.04.21.3",
+  "features": ["edit", "generate", "extract"],
+  "flags": {
+    "strict_validation": true,
+    "async_pipeline": false,
+    "use_cache": true
+  }
+}</code></pre>
+        </section>
+
+        <section id="actions">
+            <h2>3. Action Plan</h2>
+            <details>
+                <summary>Open action items (click to expand)</summary>
+                <ul>
+                    <li>Finalize API contract for edit instructions.</li>
+                    <li>Increase test coverage for failure mode scenarios.</li>
+                    <li>Document fallback behavior for unsupported payloads.</li>
+                </ul>
+            </details>
+
+            <div class="warning">
+                <p><strong>Warning:</strong> Legacy endpoint aliases are deprecated and scheduled for removal next
+                    release.</p>
+            </div>
+
+            <h3>3.1 Feedback Form</h3>
+            <form>
+                <fieldset>
+                    <legend>Reviewer Input</legend>
+                    <label for="name">Name:</label>
+                    <input id="name" name="name" type="text" placeholder="Enter name">
+                    <br><br>
+
+                    <label for="role">Role:</label>
+                    <select id="role" name="role">
+                        <option value="engineering">Engineering</option>
+                        <option value="qa">QA</option>
+                        <option value="ops">Operations</option>
+                    </select>
+                    <br><br>
+
+                    <label>
+                        <input type="checkbox" name="approve" checked>
+                        Approve current test corpus
+                    </label>
+                    <br><br>
+
+                    <label for="comments">Comments:</label><br>
+                    <textarea id="comments" name="comments" rows="4"
+                        cols="50">Looks good. Add one more malformed sample next sprint.</textarea>
+                    <br><br>
+
+                    <button type="submit">Submit</button>
+                </fieldset>
+            </form>
+        </section>
+
+        <section id="appendix">
+            <h2>4. Appendix</h2>
+            <p>Additional entities and symbols for parser robustness:</p>
+            <ul>
+                <li>Escaped operators: &amp;lt;, &amp;gt;, &amp;amp;</li>
+                <li>Currencies: USD 100.00, EUR 89.50, INR 7499.00</li>
+                <li>Dates: 2026-04-21, 21/04/2026, Apr 21 2026</li>
+            </ul>
+            <hr>
+            <p><small>End of complex HTML sample.</small></p>
+        </section>
+    </main>
+
+    <footer>
+        <p>Contact: platform@example.com</p>
+    </footer>
+</body>
+
+</html>

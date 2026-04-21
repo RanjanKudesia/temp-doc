@@ -8,9 +8,12 @@ from fastapi import APIRouter, UploadFile, Body, Query, Response
 from ..helper.extract import extract_document
 from ..helper.generate import generate_document
 from ..helper.chunks import create_chunks
+from ..helper.edit import edit_document
 from ..schemas.temp_doc_schema import (
     ChunkResponse,
+    EditResponse,
     ExtractResponse,
+    PptEditResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,3 +75,147 @@ async def chunks_endpoint(request_body: Annotated[dict, Body(...)]) -> ChunkResp
     full `/extract` response.
     """
     return create_chunks(request_body)
+
+
+@router.post("/edit")
+async def edit_endpoint(
+    request_body: Annotated[
+        dict,
+        Body(
+            openapi_examples={
+                "pasteExtractedJsonAndInstructions": {
+                    "summary": "Paste extracted_data and instructions",
+                    "description": "Only two params are needed: extracted_data and instructions.",
+                    "value": {
+                        "extracted_data": {
+                            "extension": "docx",
+                            "output_format": "json",
+                            "extracted_data": {
+                                "document_order": [],
+                                "document_defaults": None,
+                                "styles": [],
+                                "paragraphs": [],
+                                "tables": [],
+                                "media": [],
+                            },
+                        },
+                        "instructions": [
+                            {
+                                "op": "replace",
+                                "path": "/paragraphs/0/text",
+                                "value": "Updated text",
+                            }
+                        ],
+                    },
+                },
+                "advancedParagraphOps": {
+                    "summary": "Advanced paragraph operations",
+                    "description": "Examples of supported high-level edit operations.",
+                    "value": {
+                        "extracted_data": {
+                            "extension": "docx",
+                            "output_format": "json",
+                            "extracted_data": {
+                                "document_order": [],
+                                "document_defaults": None,
+                                "styles": [],
+                                "paragraphs": [],
+                                "tables": [],
+                                "media": [],
+                            },
+                        },
+                        "instructions": [
+                            {
+                                "op": "replace_text",
+                                "path": "/paragraphs/0/text",
+                                "old_value": "Old",
+                                "new_value": "New",
+                                "count": 1,
+                            },
+                            {
+                                "op": "insert_paragraph_after",
+                                "index": 0,
+                                "value": "Inserted paragraph after paragraph 0"
+                            },
+                            {
+                                "op": "remove_empty_paragraphs"
+                            }
+                        ],
+                    },
+                },
+                "tableAndListOps": {
+                    "summary": "DOCX table and list operations",
+                    "description": "Examples covering list edits, table row/column edits, and nested collections.",
+                    "value": {
+                        "extracted_data": {
+                            "extension": "docx",
+                            "output_format": "json",
+                            "extracted_data": {
+                                "document_order": [],
+                                "document_defaults": None,
+                                "styles": [],
+                                "paragraphs": [],
+                                "tables": [],
+                                "media": [],
+                            },
+                        },
+                        "instructions": [
+                            {
+                                "op": "insert_paragraph_after",
+                                "path": "/paragraphs",
+                                "index": 4,
+                                "value": {
+                                    "text": "New bullet item",
+                                    "style": "List Paragraph",
+                                    "is_bullet": True,
+                                    "is_numbered": False,
+                                    "list_level": 1
+                                }
+                            },
+                            {
+                                "op": "insert_table_row",
+                                "path": "/tables/0",
+                                "index": 0,
+                                "value": {
+                                    "cells": [
+                                        {"text": "Header A"},
+                                        {"text": "Header B"}
+                                    ]
+                                }
+                            },
+                            {
+                                "op": "insert_table_column",
+                                "path": "/tables/0",
+                                "index": 0,
+                                "value": {"text": "Notes"}
+                            }
+                        ]
+                    }
+                }
+            }
+        ),
+    ]
+) -> EditResponse | PptEditResponse:
+    """Apply patch instructions to extracted JSON using a single endpoint.
+
+    - Request body has only two fields: `extracted_data` and `instructions`.
+    - `extracted_data` accepts either raw extracted JSON or full `/extract` response.
+    - Supported extensions: DOCX, HTML, Markdown, TXT, and PPTX.
+    - **instructions** uses JSON-Pointer style paths.
+
+    Supported operations:
+    - add: create/update value at path (supports list append with /-)
+    - replace: replace existing value at path
+    - remove: remove existing value at path
+    - replace_text: replace substring inside a string field
+    - insert_paragraph_after: insert a paragraph in top-level or nested paragraph collections
+    - remove_paragraph: remove a paragraph from top-level or nested paragraph collections
+    - remove_empty_paragraphs: remove blank paragraphs from top-level or nested paragraph collections
+    - insert_table_after: insert a table in top-level or nested table collections
+    - remove_table: remove a table from top-level or nested table collections
+    - insert_table_row: insert a row into an existing table
+    - remove_table_row: remove a row from an existing table
+    - insert_table_column: insert a column into an existing table
+    - remove_table_column: remove a column from an existing table
+    """
+    return edit_document(request_body)

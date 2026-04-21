@@ -238,6 +238,17 @@ class DocxGenerationPipeline:
     def _add_extracted_paragraph(self, document: Document, paragraph_data: ExtractedParagraph) -> None:
         paragraph = self._create_output_paragraph(document, paragraph_data)
 
+        self._populate_output_paragraph(paragraph, paragraph_data)
+
+    def _populate_output_paragraph(self, paragraph, paragraph_data: ExtractedParagraph) -> None:
+        """Apply paragraph style, alignment, and runs/text to an existing paragraph."""
+        style_name = self._resolve_paragraph_style_name(paragraph_data)
+        if style_name:
+            try:
+                paragraph.style = style_name
+            except KeyError:
+                pass
+
         alignment = self._map_alignment(paragraph_data.alignment)
         if alignment is not None:
             paragraph.alignment = alignment
@@ -394,17 +405,83 @@ class DocxGenerationPipeline:
 
         table = document.add_table(
             rows=len(table_data.rows), cols=column_count)
-        if table_data.style:
-            try:
-                table.style = table_data.style
-            except KeyError:
-                pass
+        self._apply_table_style(table, table_data)
+        self._populate_docx_table(table, table_data)
 
+    def _apply_table_style(self, table, table_data: ExtractedTable) -> None:
+        """Apply extracted table style when available."""
+        if not table_data.style:
+            return
+
+        try:
+            table.style = table_data.style
+        except KeyError:
+            return
+
+    def _populate_docx_table(self, table, table_data: ExtractedTable) -> None:
+        """Populate a docx table recursively from extracted table data."""
         for row_index, row in enumerate(table_data.rows):
-            for column_index in range(column_count):
-                text = row.cells[column_index].text if column_index < len(
-                    row.cells) else ""
-                table.cell(row_index, column_index).text = text or ""
+            for column_index, cell_data in enumerate(row.cells):
+                target_cell = table.cell(row_index, column_index)
+                merged_cell = self._merge_target_cell(
+                    table,
+                    target_cell,
+                    cell_data,
+                    row_index,
+                    column_index,
+                )
+                self._populate_docx_cell(merged_cell, cell_data)
+
+    def _merge_target_cell(self, table, target_cell, cell_data, row_index: int, column_index: int):
+        """Merge table cells when colspan or rowspan is present."""
+        colspan = getattr(cell_data, "colspan", None) or 1
+        rowspan = getattr(cell_data, "rowspan", None) or 1
+        if colspan == 1 and rowspan == 1:
+            return target_cell
+
+        end_row = min(row_index + rowspan - 1, len(table.rows) - 1)
+        end_col = min(column_index + colspan - 1, len(table.columns) - 1)
+        if end_row == row_index and end_col == column_index:
+            return target_cell
+
+        return target_cell.merge(table.cell(end_row, end_col))
+
+    def _populate_docx_cell(self, cell, cell_data) -> None:
+        """Populate a docx table cell with paragraphs and nested tables."""
+        cell.text = ""
+        paragraphs = list(getattr(cell_data, "paragraphs", []) or [])
+
+        if paragraphs:
+            self._populate_existing_cell_paragraph(
+                cell.paragraphs[0], paragraphs[0])
+            for paragraph_data in paragraphs[1:]:
+                paragraph = cell.add_paragraph()
+                self._populate_output_paragraph(paragraph, paragraph_data)
+        elif getattr(cell_data, "text", None):
+            cell.paragraphs[0].add_run(cell_data.text)
+
+        for nested_table in getattr(cell_data, "tables", []) or []:
+            self._add_nested_docx_table(cell, nested_table)
+
+    def _populate_existing_cell_paragraph(self, paragraph, paragraph_data: ExtractedParagraph) -> None:
+        """Populate the default paragraph already present in a table cell."""
+        paragraph.text = ""
+        self._populate_output_paragraph(paragraph, paragraph_data)
+
+    def _add_nested_docx_table(self, cell, table_data: ExtractedTable) -> None:
+        """Add a nested table inside a table cell."""
+        if not table_data.rows:
+            return
+
+        column_count = max((len(row.cells)
+                           for row in table_data.rows), default=0)
+        if column_count == 0:
+            return
+
+        nested_table = cell.add_table(
+            rows=len(table_data.rows), cols=column_count)
+        self._apply_table_style(nested_table, table_data)
+        self._populate_docx_table(nested_table, table_data)
 
     def _resolve_paragraph_style_name(self, paragraph_data: ExtractedParagraph) -> str | None:
         if paragraph_data.is_numbered:

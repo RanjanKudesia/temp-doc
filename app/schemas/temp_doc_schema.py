@@ -266,3 +266,107 @@ class ChunkResponse(BaseModel):
 
     filename: str
     chunks: list[ChunkItem] = Field(default_factory=list)
+
+
+class PatchInstruction(BaseModel):
+    """Single JSON patch-like instruction for extracted payload editing."""
+
+    op: Literal[
+        "add",
+        "replace",
+        "remove",
+        "replace_text",
+        "insert_paragraph_after",
+        "remove_paragraph",
+        "remove_empty_paragraphs",
+        "insert_table_after",
+        "remove_table",
+        "insert_table_row",
+        "remove_table_row",
+        "insert_table_column",
+        "remove_table_column",
+    ]
+    path: str | None = None
+    value: Any | None = None
+    index: int | None = None
+    old_value: str | None = None
+    new_value: str | None = None
+    count: int | None = None
+
+
+class EditRequest(BaseModel):
+    """Request model for extracted JSON edit endpoint."""
+
+    extracted_data: ExtractedData | ExtractResponse
+    instructions: list[PatchInstruction] = Field(default_factory=list)
+
+
+class EditResponse(BaseModel):
+    """Response model for extracted JSON edits."""
+
+    extension: Literal["docx", "html", "md", "txt"]
+    output_format: Literal["json"] = "json"
+    extracted_data: ExtractedData
+    applied_instructions: int
+
+
+class PptPatchInstruction(BaseModel):
+    """Single patch instruction for PPT extracted payload editing."""
+
+    op: Literal[
+        # Generic JSON-pointer ops
+        "add",
+        "replace",
+        "remove",
+        # Shared structural ops (same semantics as DOCX)
+        "replace_text",
+        "insert_paragraph_after",
+        "remove_paragraph",
+        "remove_empty_paragraphs",
+        "insert_table_after",
+        "remove_table",
+        "insert_table_row",
+        "remove_table_row",
+        "insert_table_column",
+        "remove_table_column",
+        # PPT-specific ops
+        "add_slide",
+        "remove_slide",
+        "replace_slide_title",
+        "replace_slide_notes",
+        "move_slide",
+        # Complex PPT-specific ops
+        "duplicate_slide",
+        "swap_slides",
+        "replace_text_in_slide",
+        "set_paragraph_formatting",
+        "set_run_formatting",
+        "set_table_cell_text",
+        "bulk_replace_text",
+    ]
+    path: str | None = None
+    value: Any | None = None
+    index: int | None = None
+    old_value: str | None = None
+    new_value: str | None = None
+    count: int | None = None
+    # destination for move_slide / second slide for swap_slides
+    target_index: int | None = None
+    row_index: int | None = None      # set_table_cell_text: 0-based row
+    column_index: int | None = None   # set_table_cell_text: 0-based column
+
+
+class PptEditRequest(BaseModel):
+    """Request model for PPT extracted JSON edit endpoint."""
+
+    extracted_data: ExtractedPptData | ExtractResponse
+    instructions: list[PptPatchInstruction] = Field(default_factory=list)
+
+
+class PptEditResponse(BaseModel):
+    """Response model for PPT extracted JSON edits."""
+
+    extension: Literal["pptx"] = "pptx"
+    output_format: Literal["json"] = "json"
+    extracted_data: ExtractedPptData
+    applied_instructions: int
