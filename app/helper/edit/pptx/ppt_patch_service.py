@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from ....schemas.temp_doc_schema import (
+from ...schemas.temp_doc_schema import (
     ExtractResponse,
     ExtractedPptData,
     PptEditRequest,

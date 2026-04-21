@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from app.schemas.temp_doc_schema import (
+from ..schemas.temp_doc_schema import (
     ExtractedData,
     ExtractedParagraph,
     ExtractedPptData,

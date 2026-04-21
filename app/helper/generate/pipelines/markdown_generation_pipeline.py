@@ -3,7 +3,7 @@
 import logging
 import re
 
-from app.schemas.temp_doc_schema import ExtractedData
+from ...schemas.temp_doc_schema import ExtractedData
 
 
 class MarkdownGenerationPipeline:

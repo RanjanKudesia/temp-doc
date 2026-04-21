@@ -1,6 +1,6 @@
 """Text generation pipeline for temp-doc service."""
 import logging
-from app.schemas.temp_doc_schema import ExtractedData
+from ...schemas.temp_doc_schema import ExtractedData
 
 
 class TextGenerationPipeline:

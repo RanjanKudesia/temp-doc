@@ -17,7 +17,7 @@ from docx.shared import Inches
 from docx.shared import Pt
 from docx.shared import RGBColor
 
-from app.schemas.temp_doc_schema import (
+from ...schemas.temp_doc_schema import (
     ExtractedData,
     ExtractedDocumentDefaults,
     ExtractedMediaItem,

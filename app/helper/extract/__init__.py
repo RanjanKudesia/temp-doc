@@ -30,7 +30,7 @@ from .pipelines import (
     PptExtractionPipeline,
     TextExtractionPipeline,
 )
-from ...schemas.temp_doc_schema import (
+from ..schemas.temp_doc_schema import (
     ExtractedData,
     ExtractedPptData,
     ExtractResponse,

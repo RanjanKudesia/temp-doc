@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException, status
 
-from ...schemas.temp_doc_schema import (
+from ..schemas.temp_doc_schema import (
     EditRequest,
     EditResponse,
     PptEditRequest,

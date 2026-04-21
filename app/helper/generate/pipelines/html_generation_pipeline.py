@@ -5,7 +5,7 @@ import re
 from html import escape
 from itertools import groupby
 
-from app.schemas.temp_doc_schema import ExtractedData
+from ...schemas.temp_doc_schema import ExtractedData
 
 
 class HtmlGenerationPipeline:

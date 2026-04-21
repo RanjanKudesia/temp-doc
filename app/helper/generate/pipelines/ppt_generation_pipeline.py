@@ -10,7 +10,7 @@ from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
-from app.schemas.temp_doc_schema import ExtractedData, ExtractedPptData
+from ...schemas.temp_doc_schema import ExtractedData, ExtractedPptData
 
 
 class PptGenerationPipeline:

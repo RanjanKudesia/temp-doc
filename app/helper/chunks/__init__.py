@@ -15,7 +15,7 @@ import logging
 from fastapi import HTTPException, status
 
 from app.helper.chunks.chunking_service import ChunkingService
-from app.schemas.temp_doc_schema import ChunkResponse, ExtractedData, ExtractedPptData
+from ..schemas.temp_doc_schema import ChunkResponse, ExtractedData, ExtractedPptData
 
 logger = logging.getLogger(__name__)
 

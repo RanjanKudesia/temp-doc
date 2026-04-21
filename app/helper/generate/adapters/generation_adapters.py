@@ -10,7 +10,7 @@ from app.helper.generate.pipelines import (
     MarkdownGenerationPipeline,
     TextGenerationPipeline,
 )
-from app.schemas.temp_doc_schema import ExtractedData, ExtractedPptData
+from ...schemas.temp_doc_schema import ExtractedData, ExtractedPptData
 
 
 class GenerationAdapterFactory:

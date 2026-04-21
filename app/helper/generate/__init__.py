@@ -29,7 +29,7 @@ from app.helper.generate.pipelines import (
     PptGenerationPipeline,
     TextGenerationPipeline,
 )
-from app.schemas.temp_doc_schema import ExtractedData, ExtractedPptData, GenerateRequest
+from ..schemas.temp_doc_schema import ExtractedData, ExtractedPptData, GenerateRequest
 
 logger = logging.getLogger(__name__)
 

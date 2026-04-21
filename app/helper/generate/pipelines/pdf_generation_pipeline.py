@@ -9,7 +9,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.lib import colors
 
-from app.schemas.temp_doc_schema import ExtractedData
+from ...schemas.temp_doc_schema import ExtractedData
 
 
 class PdfGenerationPipeline:

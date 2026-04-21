@@ -34,7 +34,7 @@ from .json_patch_utils import (
     write_container_value as _write_container_value,
 )
 
-from ....schemas.temp_doc_schema import (
+from ...schemas.temp_doc_schema import (
     EditRequest,
     EditResponse,
     ExtractResponse,
