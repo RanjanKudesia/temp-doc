@@ -70,21 +70,46 @@ class MarkdownGenerationPipeline:
             parts.append(self._table_to_md(table))
 
     def _paragraph_to_md(self, paragraph) -> str:
-        heading_level = self._heading_level(paragraph.style)
+        style = paragraph.style or ""
+        heading_level = self._heading_level(style)
+
+        # Fenced code block — emit with language tag and fences
+        code_lang = getattr(paragraph, "code_fence_language", None)
+        if code_lang is not None or style == "CodeBlock":
+            lang = code_lang if code_lang is not None else ""
+            body = paragraph.text or ""
+            return f"```{lang}\n{body}\n```"
+
         text = self._runs_to_md(paragraph.runs) if paragraph.runs else (
             paragraph.text or "")
         text = text.strip()
 
         if heading_level:
+            # Strip any leading '#' that may be present in replaced text
+            # to prevent "# # Heading" double-prefix on round-trip
+            text = re.sub(r"^#+\s*", "", text)
             return f"{'#' * heading_level} {text}"
         if getattr(paragraph, "is_bullet", False):
-            return f"- {text}"
+            indent_level = self._list_indent_level(paragraph)
+            prefix = "  " * indent_level
+            return f"{prefix}- {text}"
         if getattr(paragraph, "is_numbered", False):
+            indent_level = self._list_indent_level(paragraph)
+            prefix = "  " * indent_level
             marker = getattr(paragraph, "numbering_format", None) or "1."
             if not re.match(r"^\d+[.)]$", marker):
                 marker = "1."
-            return f"{marker} {text}"
+            return f"{prefix}{marker} {text}"
         return text
+
+    def _list_indent_level(self, paragraph) -> int:
+        """Return the nesting depth stored in list_info, or 0."""
+        list_info = getattr(paragraph, "list_info", None)
+        if isinstance(list_info, dict):
+            return int(list_info.get("indent_level") or 0)
+        if list_info is not None:
+            return int(getattr(list_info, "indent_level", 0) or 0)
+        return 0
 
     def _runs_to_md(self, runs: list) -> str:
         return "".join(
@@ -94,6 +119,7 @@ class MarkdownGenerationPipeline:
                 r.italic,
                 r.underline,
                 getattr(r, "hyperlink_url", None),
+                getattr(r, "code", None),
             )
             for r in runs
         ).replace("\n", "  \n")
@@ -105,7 +131,10 @@ class MarkdownGenerationPipeline:
         italic: bool | None,
         underline: bool | None,
         link: str | None = None,
+        code: bool | None = None,
     ) -> str:
+        if code:
+            return f"`{text}`"
         result = text
         if bold and italic:
             result = f"***{result}***"

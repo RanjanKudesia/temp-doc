@@ -47,8 +47,13 @@ class MarkdownExtractionPipeline:
                     table_index += 1
                 continue
 
-            block_lines, line_index = self._collect_paragraph_block(
-                lines, line_index, line)
+            # Detect fenced code blocks (``` or ~~~) and collect as a unit
+            if re.match(r"^(`{3,}|~{3,})", stripped):
+                block_lines, line_index = self._collect_code_fence_block(
+                    lines, line_index)
+            else:
+                block_lines, line_index = self._collect_paragraph_block(
+                    lines, line_index, line)
             paragraph = self._build_paragraph(block_lines, paragraph_index)
             if include_media:
                 media.extend(self._extract_inline_media(
@@ -138,6 +143,26 @@ class MarkdownExtractionPipeline:
             "source": {"format": "markdown"},
         }
 
+    def _collect_code_fence_block(
+        self, lines: list[str], line_index: int
+    ) -> tuple[list[str], int]:
+        """Collect a fenced code block from opening ``` / ~~~ to matching close."""
+        opening = lines[line_index]
+        fence_match = re.match(r"^(`{3,}|~{3,})", opening.strip())
+        fence_char = fence_match.group(1) if fence_match else "```"
+        block_lines = [opening]
+        line_index += 1
+        while line_index < len(lines):
+            current = lines[line_index]
+            block_lines.append(current)
+            line_index += 1
+            # Stop after consuming the closing fence line
+            if current.strip() == fence_char or current.strip().startswith(fence_char) and current.strip() == fence_char:
+                break
+            if re.match(r"^" + re.escape(fence_char) + r"\s*$", current.strip()):
+                break
+        return block_lines, line_index
+
     def _collect_paragraph_block(
         self, lines: list[str], line_index: int, first_line: str
     ) -> tuple[list[str], int]:
@@ -158,32 +183,74 @@ class MarkdownExtractionPipeline:
     # ── paragraph builder ────────────────────────────────────────────────────
 
     def _build_paragraph(self, block_lines: list[str], paragraph_index: int) -> dict[str, Any]:
-        raw = "\n".join(block_lines).strip()
         heading_level = None
         style = None
         is_bullet = False
         is_numbered = False
         numbering_format = None
+        list_indent = 0
+        code_fence_language: str | None = None
 
-        heading_match = re.match(r"^\s{0,3}(#{1,6})\s+(.*)$", raw)
-        if heading_match:
-            heading_level = len(heading_match.group(1))
-            raw = heading_match.group(2).strip()
-            style = f"Heading {heading_level}"
+        # ── Fenced code block — detect before any stripping ──────────────────
+        first_stripped = block_lines[0].strip() if block_lines else ""
+        fence_open_match = re.match(r"^(`{3,}|~{3,})(\S*)", first_stripped)
+        if fence_open_match:
+            fence_marker = fence_open_match.group(1)
+            code_fence_language = fence_open_match.group(2) or ""
+            style = "CodeBlock"
+            # Body = all lines between opening and closing fence, verbatim
+            body_lines: list[str] = []
+            for bline in block_lines[1:]:
+                if re.match(r"^" + re.escape(fence_marker) + r"\s*$", bline.strip()):
+                    break
+                body_lines.append(bline)
+            raw = "\n".join(body_lines)
+            # Store as a single verbatim run — NO inline parsing so that
+            # underscores and other special chars in code are never touched.
+            runs = [{
+                "index": 0,
+                "text": raw,
+                "bold": None,
+                "italic": None,
+                "underline": None,
+                "font_name": None,
+                "font_size_pt": None,
+                "color_rgb": None,
+                "highlight_color": None,
+                "hyperlink_url": None,
+                "embedded_media": [],
+                "code": True,
+            }] if raw.strip() else []
         else:
-            bullet_match = re.match(r"^\s*[-*+]\s+(.*)$", raw)
-            number_match = re.match(r"^\s*(\d+[.)])\s+(.*)$", raw)
-            if bullet_match:
-                is_bullet = True
-                numbering_format = "bullet"
-                raw = bullet_match.group(1).strip()
-            elif number_match:
-                is_numbered = True
-                numbering_format = number_match.group(1)
-                raw = number_match.group(2).strip()
+            # ── Measure indentation from the ORIGINAL first line before stripping
+            first_line_raw = block_lines[0] if block_lines else ""
+            raw = "\n".join(block_lines).strip()
 
-        # Build inline-formatted runs from the text
-        runs = self._parse_inline_runs(raw)
+            heading_match = re.match(r"^\s{0,3}(#{1,6})\s+(.*)$", raw)
+            if heading_match:
+                heading_level = len(heading_match.group(1))
+                raw = heading_match.group(2).strip()
+                style = f"Heading {heading_level}"
+            else:
+                bullet_match = re.match(r"^(\s*)[-*+]\s+(.*)$", first_line_raw)
+                number_match = re.match(
+                    r"^(\s*)(\d+[.)])\s+(.*)$", first_line_raw)
+                if bullet_match:
+                    is_bullet = True
+                    numbering_format = "bullet"
+                    list_indent = len(bullet_match.group(1))
+                    # raw text = stripped content after the list marker
+                    raw = re.match(r"^\s*[-*+]\s+(.*)",
+                                   raw, re.DOTALL).group(1).strip()
+                elif number_match:
+                    is_numbered = True
+                    numbering_format = number_match.group(2)
+                    list_indent = len(number_match.group(1))
+                    raw = re.match(r"^\s*\d+[.)]\s+(.*)",
+                                   raw, re.DOTALL).group(1).strip()
+
+            # Build inline-formatted runs from the text
+            runs = self._parse_inline_runs(raw)
 
         if is_bullet:
             list_kind: str | None = "bullet"
@@ -196,11 +263,13 @@ class MarkdownExtractionPipeline:
             "index": paragraph_index,
             "text": raw,
             "style": style,
+            "code_fence_language": code_fence_language,
             "is_bullet": is_bullet,
             "is_numbered": is_numbered,
             "list_info": {
                 "kind": list_kind,
                 "numbering_format": numbering_format,
+                "indent_level": list_indent // 2 if list_indent else 0,
             } if (is_bullet or is_numbered) else None,
             "numbering_format": numbering_format,
             "alignment": None,
@@ -221,6 +290,10 @@ class MarkdownExtractionPipeline:
             run_text, bold = m.group("b"), True
         elif m.group("b2"):
             run_text, bold = m.group("b2"), True
+        elif m.group("esc"):
+            # Backslash-escaped character — preserve the backslash so the
+            # output round-trips correctly (e.g. \_  →  \_)
+            run_text = "\\" + m.group("esc")
         elif m.group("i"):
             run_text, italic = m.group("i"), True
         elif m.group("code"):
@@ -230,20 +303,30 @@ class MarkdownExtractionPipeline:
             url = m.group("link_url")
         elif m.group("plain"):
             run_text = m.group("plain")
+        elif m.group("any"):
+            run_text = m.group("any")
         return run_text, bold, italic, is_code, url
 
     def _parse_inline_runs(self, text: str) -> list[dict[str, Any]]:
         """Parse inline Markdown into styled runs (bold/italic/code/links)."""
         runs: list[dict[str, Any]] = []
-        # Pattern priority: bold+italic > bold > italic > code > link > plain
+        # Pattern priority: bold+italic > bold > italic > escape > code > link > plain
+        # Notes:
+        #   - \\(?P<esc>.) must come before the italic pattern so that \_ is
+        #     not consumed as an italic delimiter.
+        #   - plain now allows '[' so that checklist tokens ([x]/[ ]) and
+        #     footnote refs ([^fn]) are preserved instead of losing the '['.
+        #   - plain still excludes '\' so the esc pattern takes priority.
         pattern = re.compile(
             r"(\*\*\*(?P<bi>[^*]+?)\*\*\*"
             r"|\*\*(?P<b>[^*]+?)\*\*"
             r"|__(?P<b2>[^_]+?)__"
+            r"|\\(?P<esc>.)"
             r"|(\*|_)(?P<i>[^*_]+?)(\*|_)"
             r"|`(?P<code>[^`]+?)`"
             r"|\[(?P<link_text>[^\]]+)\]\((?P<link_url>[^)]+)\)"
-            r"|(?P<plain>[^*_`\[]+)"
+            r"|(?P<plain>[^*_`\\]+)"
+            r"|(?P<any>.)"  # catch-all: lone _ * \ etc. that form no pair
             r")"
         )
         for m in pattern.finditer(text):

@@ -47,7 +47,155 @@
             padding: 12px;
             overflow-x: auto;
         }
+
+        /* CSS custom properties */
+        :root {
+            --primary: #3b5ccc;
+            --accent: #cc7a00;
+            --radius: 6px;
+            --transition: 0.25s ease;
+        }
+
+        /* Utility classes */
+        .badge {
+            display: inline-block;
+            background: var(--primary);
+            color: #fff;
+            border-radius: var(--radius);
+            padding: 2px 8px;
+            font-size: 0.78em;
+        }
+
+        .tag-chip {
+            display: inline-block;
+            background: #e8eaf6;
+            border-radius: 12px;
+            padding: 2px 10px;
+            font-size: 0.8em;
+            margin: 2px;
+        }
+
+        .progress-label {
+            font-size: 0.85em;
+            color: #555;
+        }
+
+        abbr[title] {
+            cursor: help;
+            text-decoration: underline dotted;
+        }
+
+        mark {
+            background: #fff176;
+            padding: 0 2px;
+        }
+
+        dialog {
+            border: 1px solid #ccc;
+            border-radius: var(--radius);
+            padding: 20px;
+            min-width: 300px;
+        }
+
+        dialog::backdrop {
+            background: rgba(0, 0, 0, 0.4);
+        }
+
+        aside {
+            background: #f8f9fa;
+            border-left: 3px solid var(--primary);
+            padding: 10px 14px;
+            margin: 12px 0;
+        }
+
+        dl dt {
+            font-weight: bold;
+            margin-top: 8px;
+        }
+
+        dl dd {
+            margin-left: 20px;
+            color: #444;
+        }
+
+        /* Keyframe animation for demo */
+        @keyframes pulse-border {
+            0% {
+                box-shadow: 0 0 0 0 rgba(59, 92, 204, 0.4);
+            }
+
+            70% {
+                box-shadow: 0 0 0 8px rgba(59, 92, 204, 0);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(59, 92, 204, 0);
+            }
+        }
+
+        .animated-btn {
+            animation: pulse-border 2s infinite;
+            background: var(--primary);
+            color: #fff;
+            border: none;
+            border-radius: var(--radius);
+            padding: 8px 18px;
+            cursor: pointer;
+            transition: background var(--transition);
+        }
+
+        .animated-btn:hover {
+            background: #2a44a0;
+        }
+
+        /* Media query for narrow viewports */
+        @media (max-width: 640px) {
+            body {
+                margin: 8px;
+            }
+
+            table {
+                font-size: 0.85em;
+            }
+        }
+
+        /* CSS Grid demo */
+        .grid-demo {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin: 12px 0;
+        }
+
+        .grid-demo .cell {
+            background: #e8eaf6;
+            border-radius: var(--radius);
+            padding: 8px;
+            text-align: center;
+            font-size: 0.85em;
+        }
+
+        canvas {
+            border: 1px solid #ccc;
+            display: block;
+            margin: 10px 0;
+        }
+
+        svg.icon-demo {
+            vertical-align: middle;
+        }
     </style>
+
+    <!-- Structured data (JSON-LD) -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "TechArticle",
+      "name": "Complex HTML Test Document",
+      "author": { "@type": "Organization", "name": "Platform Engineering" },
+      "datePublished": "2026-04-24"
+    }
+    </script>
 </head>
 
 <body>
@@ -226,8 +374,396 @@
     </main>
 
     <footer>
-        <p>Contact: platform@example.com</p>
+        <address>
+            <p>Contact: <a href="mailto:platform@example.com">platform@example.com</a></p>
+            <p>Platform Engineering &bull; <time datetime="2026-04-24">April 24, 2026</time></p>
+        </address>
     </footer>
+
+    <!-- ============================================================
+         SECTION 5: Extended Semantics & Interactive Elements
+         ============================================================ -->
+    <main id="extended">
+
+        <section id="rich-text">
+            <h2>5. Rich Inline Semantics</h2>
+            <p>
+                <abbr title="Application Programming Interface">API</abbr> latency is measured in
+                <mark>milliseconds</mark>. The term <dfn>cold start</dfn> refers to initialising a runtime
+                from a fully stopped state. See <cite>Site Reliability Engineering (O'Reilly, 2016)</cite>
+                for background. Use <kbd>Ctrl+Shift+I</kbd> to open DevTools.
+                Result: <output id="calc-out" for="num-a num-b">0</output>.
+                <var>T</var> = <var>t</var><sub>end</sub> &minus; <var>t</var><sub>start</sub>.
+                Chemical formula: H<sub>2</sub>O. Power: 10<sup>3</sup> W.
+                <s>Deprecated flag: use_legacy_parser</s>.
+                <ins datetime="2026-04-24">New: async pipeline enabled</ins>.
+                <del datetime="2026-04-01">Removed: synchronous fallback</del>.
+            </p>
+
+            <h3>5.1 Definition List</h3>
+            <dl>
+                <dt>Extract</dt>
+                <dd>Parse a source document into a structured JSON representation.</dd>
+                <dt>Edit</dt>
+                <dd>Apply transformation instructions to the extracted JSON.</dd>
+                <dt>Generate</dt>
+                <dd>Reconstruct the document bytes from the edited JSON.</dd>
+            </dl>
+        </section>
+
+        <section id="media-elements">
+            <h2>6. Media &amp; Graphics</h2>
+
+            <h3>6.1 Responsive Picture</h3>
+            <picture>
+                <source media="(min-width: 800px)" srcset="https://via.placeholder.com/640x200">
+                <source media="(min-width: 400px)" srcset="https://via.placeholder.com/400x150">
+                <img src="https://via.placeholder.com/320x120" alt="Responsive placeholder image">
+            </picture>
+
+            <h3>6.2 Video Placeholder</h3>
+            <video width="320" height="180" controls muted preload="none" poster="https://via.placeholder.com/320x180">
+                <source src="demo.mp4" type="video/mp4">
+                <track kind="subtitles" src="demo.vtt" srclang="en" label="English">
+                Your browser does not support the video element.
+            </video>
+
+            <h3>6.3 Audio Placeholder</h3>
+            <audio controls preload="none">
+                <source src="demo.ogg" type="audio/ogg">
+                <source src="demo.mp3" type="audio/mpeg">
+                Your browser does not support the audio element.
+            </audio>
+
+            <h3>6.4 Inline SVG</h3>
+            <svg class="icon-demo" width="120" height="60" viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg"
+                aria-label="SVG bar chart demo" role="img">
+                <title>Bar chart demo</title>
+                <rect x="10" y="10" width="20" height="40" fill="#3b5ccc" />
+                <rect x="40" y="25" width="20" height="25" fill="#cc7a00" />
+                <rect x="70" y="5" width="20" height="45" fill="#2ecc71" />
+                <rect x="100" y="20" width="20" height="30" fill="#e74c3c" />
+                <text x="10" y="58" font-size="8" fill="#333">A</text>
+                <text x="40" y="58" font-size="8" fill="#333">B</text>
+                <text x="70" y="58" font-size="8" fill="#333">C</text>
+                <text x="100" y="58" font-size="8" fill="#333">D</text>
+            </svg>
+
+            <h3>6.5 Canvas</h3>
+            <canvas id="demo-canvas" width="220" height="80">
+                Canvas not supported.
+            </canvas>
+
+            <h3>6.6 Image Map</h3>
+            <img src="https://via.placeholder.com/300x100" alt="Image map demo" usemap="#zone-map">
+            <map name="zone-map">
+                <area shape="rect" coords="0,0,100,100" href="#summary" alt="Summary zone">
+                <area shape="rect" coords="100,0,200,100" href="#metrics" alt="Metrics zone">
+                <area shape="rect" coords="200,0,300,100" href="#actions" alt="Actions zone">
+            </map>
+        </section>
+
+        <section id="interactive">
+            <h2>7. Interactive &amp; Form Elements</h2>
+
+            <h3>7.1 Progress &amp; Meter</h3>
+            <p class="progress-label">Pipeline progress:</p>
+            <progress id="pipeline-progress" value="72" max="100">72%</progress>
+            <br><br>
+            <p class="progress-label">Disk usage (<meter> element):</p>
+            <meter id="disk-meter" value="0.68" min="0" max="1" low="0.5" high="0.8" optimum="0.3">
+                68%
+            </meter>
+
+            <h3>7.2 Datalist Input</h3>
+            <label for="service-input">Service:</label>
+            <input id="service-input" list="service-list" placeholder="Type a service name">
+            <datalist id="service-list">
+                <option value="content-extractor">
+                <option value="document-generator">
+                <option value="insight-service">
+                <option value="knowledge-base">
+            </datalist>
+
+            <h3>7.3 Range &amp; Number Inputs</h3>
+            <form id="calc-form">
+                <label for="num-a">A: <input id="num-a" type="number" value="10" min="0" max="999"></label>
+                &nbsp;+&nbsp;
+                <label for="num-b">B: <input id="num-b" type="number" value="5" min="0" max="999"></label>
+                &nbsp;
+                <button type="button" class="animated-btn" id="calc-btn">Calculate</button>
+                &nbsp; Result: <output id="calc-result" for="num-a num-b">—</output>
+                <br><br>
+                <label for="quality-range">Quality threshold:
+                    <input id="quality-range" type="range" min="0" max="100" value="75">
+                    <output id="range-out">75</output>
+                </label>
+            </form>
+
+            <h3>7.4 Dialog</h3>
+            <button class="animated-btn" id="open-dialog-btn" type="button">Open Dialog</button>
+            <dialog id="info-dialog" aria-labelledby="dialog-title">
+                <h4 id="dialog-title">Pipeline Info</h4>
+                <p>This dialog is a native <code>&lt;dialog&gt;</code> element for testing extraction.</p>
+                <ul>
+                    <li>Supports <code>showModal()</code> and <code>close()</code></li>
+                    <li>Has <code>::backdrop</code> pseudo-element</li>
+                </ul>
+                <form method="dialog">
+                    <button type="submit">Close</button>
+                </form>
+            </dialog>
+
+            <h3>7.5 Tag Chips &amp; Badges</h3>
+            <p>
+                <span class="badge">v2.4.1</span>
+                <span class="tag-chip">html</span>
+                <span class="tag-chip">extraction</span>
+                <span class="tag-chip">round-trip</span>
+                <span class="tag-chip">pipeline</span>
+                <span class="badge" style="background:var(--accent)">staging</span>
+            </p>
+        </section>
+
+        <section id="layout">
+            <h2>8. Layout Patterns</h2>
+
+            <h3>8.1 CSS Grid</h3>
+            <div class="grid-demo" aria-label="Grid layout demo">
+                <div class="cell">Extract</div>
+                <div class="cell">Edit</div>
+                <div class="cell">Generate</div>
+                <div class="cell">Validate</div>
+                <div class="cell">Persist</div>
+                <div class="cell">Serve</div>
+            </div>
+
+            <h3>8.2 Aside</h3>
+            <aside aria-label="Tip">
+                <strong>Tip:</strong> When testing HTML round-trips, always compare both the DOM structure
+                and the rendered text of each semantic container independently.
+            </aside>
+
+            <h3>8.3 Nested Table with colspan/rowspan</h3>
+            <table>
+                <caption>Service Ownership Matrix</caption>
+                <thead>
+                    <tr>
+                        <th rowspan="2">Service</th>
+                        <th colspan="2">Owner</th>
+                        <th rowspan="2">SLA</th>
+                    </tr>
+                    <tr>
+                        <th>Primary</th>
+                        <th>Backup</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>content-extractor</td>
+                        <td>Alice</td>
+                        <td>Bob</td>
+                        <td>99.9%</td>
+                    </tr>
+                    <tr>
+                        <td>document-generator</td>
+                        <td>Carol</td>
+                        <td>Alice</td>
+                        <td>99.5%</td>
+                    </tr>
+                    <tr>
+                        <td>insight-service</td>
+                        <td>Dave</td>
+                        <td>Carol</td>
+                        <td>99.0%</td>
+                    </tr>
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td colspan="3"><em>Last updated: 2026-04-24</em></td>
+                        <td>&mdash;</td>
+                    </tr>
+                </tfoot>
+            </table>
+
+            <h3>8.4 Data Table with colgroup</h3>
+            <table>
+                <colgroup>
+                    <col style="background:#f0f4ff">
+                    <col span="2" style="background:#fff9f0">
+                </colgroup>
+                <tr>
+                    <th>Month</th>
+                    <th>Requests (M)</th>
+                    <th>Errors</th>
+                </tr>
+                <tr>
+                    <td>February</td>
+                    <td>12.4</td>
+                    <td>261</td>
+                </tr>
+                <tr>
+                    <td>March</td>
+                    <td>14.1</td>
+                    <td>187</td>
+                </tr>
+                <tr>
+                    <td>April</td>
+                    <td>15.9</td>
+                    <td>134</td>
+                </tr>
+            </table>
+        </section>
+
+        <section id="scripting">
+            <h2>9. Scripting Targets</h2>
+            <p id="js-status">JavaScript not yet executed.</p>
+            <ul id="feature-list">
+                <li data-id="extract">Extraction pipeline</li>
+                <li data-id="edit">Edit pipeline</li>
+                <li data-id="generate">Generation pipeline</li>
+            </ul>
+            <button type="button" class="animated-btn" id="toggle-list-btn">Toggle list</button>
+
+            <h3>9.1 Template Element</h3>
+            <template id="card-template">
+                <div class="cell" style="padding:10px;">
+                    <strong class="card-title">Untitled</strong>
+                    <p class="card-body">No description.</p>
+                </div>
+            </template>
+            <div id="card-container" class="grid-demo"></div>
+            <button type="button" class="animated-btn" id="add-card-btn">Add Card</button>
+        </section>
+
+        <section id="accessibility">
+            <h2>10. Accessibility Attributes</h2>
+            <nav aria-label="Pagination">
+                <ol>
+                    <li><a href="#" aria-label="Page 1" aria-current="page">1</a></li>
+                    <li><a href="#" aria-label="Page 2">2</a></li>
+                    <li><a href="#" aria-label="Page 3">3</a></li>
+                </ol>
+            </nav>
+            <div role="alert" aria-live="polite" id="live-region" style="background:#e8f5e9;padding:8px;">
+                System status: <strong>Nominal</strong>
+            </div>
+            <div role="tablist" aria-label="Content tabs">
+                <button role="tab" aria-selected="true" aria-controls="tab-panel-1" id="tab-1">Extract</button>
+                <button role="tab" aria-selected="false" aria-controls="tab-panel-2" id="tab-2">Generate</button>
+            </div>
+            <div role="tabpanel" id="tab-panel-1" aria-labelledby="tab-1">
+                <p>Extraction turns raw bytes into structured JSON paragraphs and tables.</p>
+            </div>
+            <div role="tabpanel" id="tab-panel-2" aria-labelledby="tab-2" hidden>
+                <p>Generation reconstructs document bytes from edited structured data.</p>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ============================================================
+         Inline JavaScript
+         ============================================================ -->
+    <script>
+        /* ── Canvas drawing ── */
+        (function drawCanvas() {
+            var canvas = document.getElementById('demo-canvas');
+            if (!canvas) return;
+            var ctx = canvas.getContext('2d');
+            // Gradient background
+            var grad = ctx.createLinearGradient(0, 0, 220, 0);
+            grad.addColorStop(0, '#3b5ccc');
+            grad.addColorStop(1, '#cc7a00');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 220, 80);
+            // Text
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 14px Arial';
+            ctx.fillText('Canvas: 2D context demo', 12, 30);
+            ctx.font = '11px Arial';
+            ctx.fillText('Extraction test target', 12, 52);
+        })();
+
+        /* ── Dialog open/close ── */
+        var dialogBtn = document.getElementById('open-dialog-btn');
+        var dialog = document.getElementById('info-dialog');
+        if (dialogBtn && dialog) {
+            dialogBtn.addEventListener('click', function () {
+                if (typeof dialog.showModal === 'function') {
+                    dialog.showModal();
+                } else {
+                    dialog.setAttribute('open', '');
+                }
+            });
+        }
+
+        /* ── Calculator ── */
+        document.getElementById('calc-btn').addEventListener('click', function () {
+            var a = parseFloat(document.getElementById('num-a').value) || 0;
+            var b = parseFloat(document.getElementById('num-b').value) || 0;
+            document.getElementById('calc-result').value = a + b;
+        });
+
+        /* ── Range slider ── */
+        document.getElementById('quality-range').addEventListener('input', function () {
+            document.getElementById('range-out').value = this.value;
+        });
+
+        /* ── Toggle list ── */
+        document.getElementById('toggle-list-btn').addEventListener('click', function () {
+            var list = document.getElementById('feature-list');
+            list.style.display = list.style.display === 'none' ? '' : 'none';
+        });
+
+        /* ── Template stamp: Add Card ── */
+        var cardCounter = 0;
+        document.getElementById('add-card-btn').addEventListener('click', function () {
+            var tmpl = document.getElementById('card-template');
+            if (!tmpl) return;
+            var clone = tmpl.content.cloneNode(true);
+            cardCounter++;
+            clone.querySelector('.card-title').textContent = 'Card ' + cardCounter;
+            clone.querySelector('.card-body').textContent = 'Auto-generated card #' + cardCounter;
+            document.getElementById('card-container').appendChild(clone);
+        });
+
+        /* ── Tabs ── */
+        document.querySelectorAll('[role="tab"]').forEach(function (tab) {
+            tab.addEventListener('click', function () {
+                var panelId = tab.getAttribute('aria-controls');
+                document.querySelectorAll('[role="tab"]').forEach(function (t) {
+                    t.setAttribute('aria-selected', 'false');
+                });
+                document.querySelectorAll('[role="tabpanel"]').forEach(function (p) {
+                    p.hidden = true;
+                });
+                tab.setAttribute('aria-selected', 'true');
+                var panel = document.getElementById(panelId);
+                if (panel) panel.hidden = false;
+            });
+        });
+
+        /* ── Status message on DOMContentLoaded ── */
+        document.addEventListener('DOMContentLoaded', function () {
+            var el = document.getElementById('js-status');
+            if (el) el.textContent = 'JavaScript executed successfully.';
+            var live = document.getElementById('live-region');
+            if (live) live.querySelector('strong').textContent = 'Nominal (JS active)';
+        });
+
+        /* ── Fetch-style async demo (does not make real network call) ── */
+        function simulateFetch(url) {
+            return new Promise(function (resolve) {
+                setTimeout(function () {
+                    resolve({ ok: true, url: url, timestamp: Date.now() });
+                }, 100);
+            });
+        }
+        simulateFetch('/api/health').then(function (resp) {
+            console.log('[demo] Simulated fetch resolved:', resp.url, resp.timestamp);
+        });
+    </script>
 </body>
 
 </html>

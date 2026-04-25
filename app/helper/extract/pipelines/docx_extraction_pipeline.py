@@ -1,8 +1,10 @@
 """DOCX extraction pipeline for temp-doc service - simplified, no storage."""
 
 import base64
+import json
 import logging
 import mimetypes
+import time
 from io import BytesIO
 from typing import Any
 from zipfile import is_zipfile
@@ -33,6 +35,12 @@ class DocxExtractionPipeline:
 
     def run(self, file_bytes: bytes, include_media: bool = True) -> dict[str, Any]:
         """Parse a DOCX byte stream and return extracted JSON payload."""
+        t0 = time.perf_counter()
+        self.logger.info(
+            "DOCX extraction started",
+            extra={"file_size_bytes": len(file_bytes)},
+        )
+
         if not is_zipfile(BytesIO(file_bytes)):
             raise ValueError(
                 "Invalid DOCX file: not a valid ZIP archive. File may be corrupted.")
@@ -45,6 +53,22 @@ class DocxExtractionPipeline:
 
         extracted = self._extract_document(
             document, include_media=include_media)
+
+        elapsed_ms = round((time.perf_counter() - t0) * 1000)
+        response_size_bytes = len(json.dumps(extracted).encode("utf-8"))
+        self.logger.info(
+            "DOCX extraction complete",
+            extra={
+                "elapsed_ms": elapsed_ms,
+                "elapsed_s": round(elapsed_ms / 1000, 3),
+                "response_size_bytes": response_size_bytes,
+                "response_size_kb": round(response_size_bytes / 1024, 2),
+                "paragraphs_extracted": len(extracted.get("paragraphs", [])),
+                "tables_extracted": len(extracted.get("tables", [])),
+                "media_extracted": len(extracted.get("media", [])),
+                "styles_extracted": len(extracted.get("styles", [])),
+            },
+        )
         return extracted
 
     def _extract_document(
@@ -53,20 +77,56 @@ class DocxExtractionPipeline:
         include_media: bool,
     ) -> dict[str, Any]:
         """Extract all document content."""
+        total_paragraphs = len(document.paragraphs)
+        total_tables = len(document.tables)
+        total_sections = len(document.sections)
+        total_styles = len(document.styles)
+        total_shapes = len(document.inline_shapes)
+
+        self.logger.info(
+            "DOCX document structure",
+            extra={
+                "paragraphs": total_paragraphs,
+                "tables": total_tables,
+                "sections": total_sections,
+                "styles": total_styles,
+                "inline_shapes": total_shapes,
+            },
+        )
+
         media_index = (
             self._extract_and_save_media(document, "temp-doc")
             if include_media
             else {}
         )
 
-        paragraphs = [
-            self._extract_paragraph(paragraph, index, document, media_index)
-            for index, paragraph in enumerate(document.paragraphs)
-        ]
-        tables = [
-            self._extract_table(table, index, document, media_index)
-            for index, table in enumerate(document.tables)
-        ]
+        paragraphs: list[dict[str, Any]] = []
+        log_interval = max(1, total_paragraphs //
+                           10) if total_paragraphs >= 10 else total_paragraphs
+        for index, paragraph in enumerate(document.paragraphs):
+            paragraphs.append(
+                self._extract_paragraph(
+                    paragraph, index, document, media_index)
+            )
+            if total_paragraphs > 0 and ((index + 1) % log_interval == 0 or index + 1 == total_paragraphs):
+                self.logger.debug(
+                    "Paragraphs extracted",
+                    extra={"done": index + 1, "total": total_paragraphs},
+                )
+
+        tables: list[dict[str, Any]] = []
+        for index, table in enumerate(document.tables):
+            tables.append(
+                self._extract_table(table, index, document, media_index)
+            )
+            self.logger.debug(
+                "Table extracted",
+                extra={
+                    "table_index": index,
+                    "rows": len(table.rows),
+                    "columns": len(table.columns) if table.rows else 0,
+                },
+            )
 
         body_order: list[dict[str, Any]] = []
         paragraph_index = 0
@@ -129,6 +189,10 @@ class DocxExtractionPipeline:
             except (AttributeError, KeyError, ValueError, TypeError, OSError):
                 continue
 
+        self.logger.info(
+            "Media extraction complete",
+            extra={"images_found": len(media_index)},
+        )
         return media_index
 
     def _content_type_to_extension(self, content_type: str) -> str:

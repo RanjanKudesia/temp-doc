@@ -27,6 +27,7 @@ from .pipelines import (
     HtmlExtractionPipeline,
     MarkdownExtractionPipeline,
     PdfConversionPipeline,
+    PdfExtractionPipeline,
     PptExtractionPipeline,
     TextExtractionPipeline,
 )
@@ -44,7 +45,8 @@ _html_adapter = HtmlJsonExtractionAdapter(HtmlExtractionPipeline())
 _markdown_adapter = MarkdownJsonExtractionAdapter(MarkdownExtractionPipeline())
 _text_adapter = TextJsonExtractionAdapter(TextExtractionPipeline())
 _ppt_adapter = PptJsonExtractionAdapter(PptExtractionPipeline())
-_pdf = PdfConversionPipeline()
+# native fitz+pdfplumber; falls back to PdfConversionPipeline for scanned PDFs
+_pdf = PdfExtractionPipeline()
 
 
 async def extract_document(

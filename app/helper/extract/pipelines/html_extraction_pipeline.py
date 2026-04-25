@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Any
 
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, Doctype, NavigableString, Tag
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
 
@@ -43,7 +43,8 @@ def _default_run(text: str) -> dict[str, Any]:
 
 def _same_style(a: dict[str, Any], b: dict[str, Any]) -> bool:
     keys = ("bold", "italic", "underline", "strikethrough", "code",
-            "color_rgb", "font_name", "hyperlink_url")
+            "color_rgb", "font_name", "font_size_pt", "hyperlink_url",
+            "highlight_color", "semantic_insert", "semantic_delete", "vertical_align")
     return all(a.get(k) == b.get(k) for k in keys)
 
 
@@ -61,18 +62,48 @@ def _css_color_to_rgb(raw: str) -> str | None:
     return None
 
 
+def _css_size_to_pt(raw: str) -> float | None:
+    """Convert a CSS font-size value to points (best-effort)."""
+    raw = raw.strip()
+    m = re.match(r"([\d.]+)\s*(pt|px|em|rem)?", raw, re.I)
+    if not m:
+        return None
+    try:
+        val = float(m.group(1))
+    except ValueError:
+        return None
+    unit = (m.group(2) or "pt").lower()
+    if unit == "pt":
+        return val
+    if unit == "px":
+        return round(val * 0.75, 2)
+    if unit in ("em", "rem"):
+        return round(val * 12.0, 2)
+    return None
+
+
 def _apply_tag_style_flags(name: str, style: dict[str, Any]) -> None:
     """Update style dict in-place based on semantic HTML tag name."""
     if name in {"b", "strong"}:
         style["bold"] = True
-    if name in {"i", "em"}:
+    if name in {"i", "em", "cite", "dfn", "var"}:
         style["italic"] = True
-    if name in {"u", "ins"}:
+    if name == "u":
         style["underline"] = True
-    if name in {"s", "del", "strike"}:
+    if name == "ins":
+        style["underline"] = True
+        style["semantic_insert"] = True  # preserve ins semantics
+    if name in {"s", "strike"}:
         style["strikethrough"] = True
+    if name == "del":
+        style["strikethrough"] = True
+        style["semantic_delete"] = True  # preserve del semantics
     if name in {"code", "kbd", "samp", "tt"}:
         style["code"] = True
+    if name == "mark":
+        style["highlight_color"] = "yellow"
+    if name in {"sub", "sup"}:
+        style["vertical_align"] = name  # "sub" or "sup"
     if name == "a":
         href = (style.get("_node_href") or "").strip()
         if href:
@@ -95,6 +126,11 @@ def _apply_inline_css(node: Tag, style: dict[str, Any]) -> None:
         )
         if font_raw:
             style["font_name"] = font_raw
+    m_size = re.search(r"\bfont-size\s*:\s*([^;]+)", inline, re.I)
+    if m_size:
+        size_pt = _css_size_to_pt(m_size.group(1).strip())
+        if size_pt is not None:
+            style["font_size_pt"] = size_pt
 
 
 class _RunCollector:
@@ -106,7 +142,7 @@ class _RunCollector:
 
     def push_text(self, text: str, style: dict[str, Any]) -> None:
         """Append or merge a text run."""
-        normalized = _normalize_text(text)
+        normalized = "\n" if text == "\n" else _normalize_text(text)
         if not normalized:
             return
         run = {
@@ -119,13 +155,21 @@ class _RunCollector:
             "code": style.get("code"),
             "color_rgb": style.get("color_rgb"),
             "font_name": style.get("font_name"),
-            "font_size_pt": None,
-            "highlight_color": None,
+            "font_size_pt": style.get("font_size_pt"),
+            "highlight_color": style.get("highlight_color"),
             "hyperlink_url": style.get("hyperlink_url"),
             "embedded_media": [],
+            # Semantic extras — preserved as model_extra in ExtractedRun
+            "semantic_insert": style.get("semantic_insert"),
+            "semantic_delete": style.get("semantic_delete"),
+            "vertical_align": style.get("vertical_align"),
         }
         if self.runs and _same_style(self.runs[-1], run):
-            self.runs[-1]["text"] = f"{self.runs[-1]['text']} {run['text']}".strip()
+            prev_text = str(self.runs[-1].get("text") or "")
+            if prev_text.endswith("\n") or run["text"].startswith("\n"):
+                self.runs[-1]["text"] = f"{prev_text}{run['text']}"
+            else:
+                self.runs[-1]["text"] = f"{prev_text} {run['text']}".strip()
         else:
             run["index"] = len(self.runs)
             self.runs.append(run)
@@ -147,6 +191,28 @@ class _RunCollector:
         if name == "br":
             self.push_text("\n", style)
             return
+        if name == "img":
+            src = (node.get("src") or "").strip()
+            if src:
+                w = node.get("width", "")
+                h = node.get("height", "")
+                media_item = {
+                    "relationship_id": None,
+                    "content_type": None,
+                    "file_name": src.split("/")[-1],
+                    "local_file_path": src,
+                    "local_url": src,
+                    "width_emu": int(w) if str(w).isdigit() else None,
+                    "height_emu": int(h) if str(h).isdigit() else None,
+                    "alt_text": (node.get("alt") or "").strip() or None,
+                }
+                if self.runs:
+                    self.runs[-1]["embedded_media"].append(media_item)
+                else:
+                    placeholder = _default_run("")
+                    placeholder["embedded_media"] = [media_item]
+                    self.runs.append(placeholder)
+            return
         next_style = dict(style)
         if name == "a":
             next_style["_node_href"] = (node.get("href") or "").strip()
@@ -163,7 +229,7 @@ def _collect_runs(element: Tag, *, skip_block_children: bool) -> list[dict[str, 
         "bold": None, "italic": None, "underline": None,
         "strikethrough": None, "code": None,
         "color_rgb": None, "font_name": None,
-        "hyperlink_url": None,
+        "font_size_pt": None, "hyperlink_url": None,
     })
     for idx, run in enumerate(collector.runs):
         run["index"] = idx
@@ -244,22 +310,127 @@ class HtmlExtractionPipeline:
         state = _ExtractionState(include_media=include_media)
         self._walk(state, root)
 
-        title_tag = soup.title
-        title_text = (title_tag.string.strip()
-                      if title_tag and title_tag.string else None)
+        metadata = self._build_metadata(soup, root, html)
 
         return {
-            "metadata": {
-                "source_type": "html",
-                "extraction_mode": "html",
-                "title": title_text,
-            },
+            "metadata": metadata,
             "document_order": state.document_order,
             "document_defaults": None,
             "styles": [],
             "paragraphs": state.paragraphs,
             "tables": state.tables,
             "media": state.media,
+        }
+
+    def _build_metadata(self, soup: BeautifulSoup, root: Tag, raw_html: str) -> dict[str, Any]:
+        """Capture full-fidelity HTML metadata for downstream generation."""
+        title_tag = soup.title
+        title_text = (title_tag.string.strip()
+                      if title_tag and title_tag.string else None)
+
+        html_tag = soup.html if isinstance(soup.html, Tag) else None
+        head_tag = soup.head if isinstance(soup.head, Tag) else None
+
+        doctype = self._extract_doctype(soup)
+        style_blocks, link_tags, meta_tags, script_blocks = self._extract_head_assets(
+            head_tag)
+
+        return {
+            "source_type": "html",
+            "extraction_mode": "html",
+            "title": title_text,
+            "doctype": doctype,
+            "full_html": raw_html,
+            "head_html": str(head_tag) if head_tag is not None else None,
+            "body_html": str(root) if isinstance(root, Tag) else None,
+            "html_attributes": self._tag_attrs(html_tag),
+            "body_attributes": self._tag_attrs(root),
+            "style_blocks": style_blocks,
+            "meta_tags": meta_tags,
+            "link_tags": link_tags,
+            "script_blocks": script_blocks,
+        }
+
+    def _extract_head_assets(
+        self,
+        head_tag: Tag | None,
+    ) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Extract style/link/meta/script data from the head tag."""
+        style_blocks: list[str] = []
+        link_tags: list[dict[str, Any]] = []
+        meta_tags: list[dict[str, Any]] = []
+        script_blocks: list[dict[str, Any]] = []
+
+        if head_tag is None:
+            return style_blocks, link_tags, meta_tags, script_blocks
+
+        for child in head_tag.find_all(recursive=False):
+            if not isinstance(child, Tag):
+                continue
+            self._collect_head_child_asset(
+                child,
+                style_blocks,
+                link_tags,
+                meta_tags,
+                script_blocks,
+            )
+
+        return style_blocks, link_tags, meta_tags, script_blocks
+
+    def _collect_head_child_asset(
+        self,
+        child: Tag,
+        style_blocks: list[str],
+        link_tags: list[dict[str, Any]],
+        meta_tags: list[dict[str, Any]],
+        script_blocks: list[dict[str, Any]],
+    ) -> None:
+        """Add one head child into metadata asset collections."""
+        name = child.name.lower()
+        if name == "style":
+            style_blocks.append(child.get_text() or "")
+            return
+        if name == "link":
+            link_tags.append(self._tag_attrs(child))
+            return
+        if name == "meta":
+            meta_tags.append(self._tag_attrs(child))
+            return
+        if name == "script":
+            script_blocks.append(
+                {
+                    "attrs": self._tag_attrs(child),
+                    "content": child.get_text() or "",
+                }
+            )
+
+    def _extract_doctype(self, soup: BeautifulSoup) -> str | None:
+        """Extract doctype text when present."""
+        for item in soup.contents:
+            if isinstance(item, Doctype):
+                return f"<!DOCTYPE {str(item)}>"
+        return None
+
+    def _tag_attrs(self, tag: Tag | None) -> dict[str, Any]:
+        """Convert tag attributes to JSON-safe values."""
+        if tag is None:
+            return {}
+
+        attrs: dict[str, Any] = {}
+        for key, value in tag.attrs.items():
+            if isinstance(value, list):
+                attrs[key] = " ".join(str(v) for v in value)
+            else:
+                attrs[key] = value
+        return attrs
+
+    def _tag_source(self, tag: Tag) -> dict[str, Any]:
+        """Capture source snippet and tag metadata for a node."""
+        return {
+            "format": "html",
+            "tag": tag.name.lower() if tag.name else None,
+            "attrs": self._tag_attrs(tag),
+            "raw_html": str(tag),
         }
 
     # ── Direction detection ───────────────────────────────────────────────────
@@ -317,10 +488,15 @@ class HtmlExtractionPipeline:
         list_start: int | None = None,
         alignment: str | None = None,
         direction: str | None = None,
+        source: dict[str, Any] | None = None,
     ) -> None:
         list_info = self._make_list_info(
             is_bullet, is_numbered, numbering_format, list_level, list_start
         )
+        source_payload = {"format": "html"}
+        if isinstance(source, dict):
+            source_payload.update(source)
+
         state.paragraphs.append({
             "index": state.paragraph_index,
             "text": text,
@@ -333,7 +509,7 @@ class HtmlExtractionPipeline:
             "alignment": alignment,
             "direction": direction,
             "runs": runs if runs else [_default_run(text)],
-            "source": {"format": "html"},
+            "source": source_payload,
         })
         state.document_order.append(
             {"type": "paragraph", "index": state.paragraph_index}
@@ -352,12 +528,15 @@ class HtmlExtractionPipeline:
         list_level: int = 0,
         list_start: int | None = None,
         direction: str | None = None,
+        override_style: str | None = None,
     ) -> None:
         runs = _extract_runs(elem)
         text = "".join((run.get("text") or "") for run in runs).strip()
         if not text:
             return
-        style = f"Heading {heading_level}" if heading_level else None
+        style = override_style if override_style is not None else (
+            f"Heading {heading_level}" if heading_level else None
+        )
         direction = self._detect_direction(elem, text, direction)
         self._add_paragraph(
             state,
@@ -370,6 +549,7 @@ class HtmlExtractionPipeline:
             list_level=list_level,
             list_start=list_start,
             direction=direction,
+            source=self._tag_source(elem),
         )
 
     def _add_paragraph_direct(
@@ -463,6 +643,7 @@ class HtmlExtractionPipeline:
             "rowspan": rs,
             "_nested_elems": nested_table_elems,
             "nested_table_indices": [],
+            "source": self._tag_source(cell),
         }
 
     def _add_table(self, state: _ExtractionState, table_elem: Tag) -> None:
@@ -470,6 +651,26 @@ class HtmlExtractionPipeline:
         if table_id in state.seen_tables:
             return
         state.seen_tables.add(table_id)
+
+        # Emit <caption> as a TableCaption paragraph before the table
+        caption_tag = next(
+            (c for c in table_elem.children
+             if isinstance(c, Tag) and c.name.lower() == "caption"),
+            None,
+        )
+        if caption_tag is not None:
+            caption_text = _normalize_text(
+                caption_tag.get_text(" ", strip=True))
+            if caption_text:
+                caption_runs = _extract_runs(caption_tag)
+                self._add_paragraph(
+                    state,
+                    text=caption_text,
+                    runs=caption_runs if caption_runs else [
+                        _default_run(caption_text)],
+                    style="TableCaption",
+                    source=self._tag_source(caption_tag),
+                )
 
         table_rows: list[dict[str, Any]] = []
         max_cols = 0
@@ -503,7 +704,7 @@ class HtmlExtractionPipeline:
             "column_count": max_cols,
             "style": None,
             "rows": table_rows,
-            "source": {"format": "html"},
+            "source": self._tag_source(table_elem),
         })
         state.document_order.append({"type": "table", "index": current_index})
         state.table_index += 1
@@ -531,6 +732,16 @@ class HtmlExtractionPipeline:
                 self._walk_list(state, child, list_level=list_level + 1)
             elif cname == "table":
                 self._add_table(state, child)
+            elif cname == "img":
+                self._add_media(state, child)
+            elif cname == "figcaption":
+                self._add_paragraph_from_element(
+                    state, child, override_style="Caption")
+            elif cname in {
+                "div", "section", "article", "main", "header",
+                "footer", "aside", "nav", "figure",
+            }:
+                self._walk_div_like(state, child)
 
     def _walk_list(
         self,
@@ -559,6 +770,66 @@ class HtmlExtractionPipeline:
             )
             self._walk_list_item_children(state, li, list_level=list_level)
             current_number += 1
+
+    # ── Definition list walker ────────────────────────────────────────────────
+
+    def _walk_definition_list(self, state: _ExtractionState, dl_elem: Tag) -> None:
+        """Extract <dl> as alternating DefinitionTerm / DefinitionData paragraphs."""
+        for child in dl_elem.children:
+            if not isinstance(child, Tag):
+                continue
+            cname = child.name.lower()
+            if cname == "dt":
+                self._add_paragraph_from_element(
+                    state, child, override_style="DefinitionTerm")
+            elif cname == "dd":
+                self._add_paragraph_from_element(
+                    state, child, override_style="DefinitionData")
+            elif cname in {"ul", "ol"}:
+                self._walk_list(state, child, list_level=0)
+            elif cname == "table":
+                self._add_table(state, child)
+
+    # ── Fieldset walker ───────────────────────────────────────────────────────
+
+    def _walk_fieldset(self, state: _ExtractionState, fieldset_elem: Tag) -> None:
+        """Walk a <fieldset> treating <legend> as a heading and form controls as text."""
+        for child in fieldset_elem.children:
+            if not isinstance(child, Tag):
+                continue
+            cname = child.name.lower()
+            if cname == "legend":
+                self._add_paragraph_from_element(
+                    state, child, override_style="Legend")
+            elif cname in {"label", "button", "textarea"}:
+                self._add_paragraph_from_element(state, child)
+            elif cname == "input":
+                # Use placeholder or value as surrogate text for input fields.
+                raw = (
+                    child.get("placeholder")
+                    or child.get("value")
+                    or child.get("type")
+                    or ""
+                )
+                text = _normalize_text(str(raw))
+                if text:
+                    self._add_paragraph(
+                        state, text=text,
+                        runs=[_default_run(text)],
+                        source=self._tag_source(child),
+                    )
+            elif cname == "select":
+                self._walk_div_like(state, child)
+            elif cname in {"ul", "ol"}:
+                self._walk_list(state, child, list_level=0)
+            elif cname == "table":
+                self._add_table(state, child)
+            elif cname == "fieldset":
+                self._walk_fieldset(state, child)
+            else:
+                txt = _normalize_text(child.get_text(" ", strip=True))
+                if txt:
+                    self._add_paragraph_from_element(state, child)
 
     # ── Walkers ───────────────────────────────────────────────────────────────
 
@@ -627,9 +898,31 @@ class HtmlExtractionPipeline:
         if name in {"blockquote", "pre"}:
             self._add_paragraph_from_element(state, child)
             return True
+        if name == "figcaption":
+            self._add_paragraph_from_element(
+                state, child, override_style="Caption")
+            return True
+        if name == "details":
+            self._walk(state, child)
+            return True
+        if name == "summary":
+            self._add_paragraph_from_element(
+                state, child, override_style="Summary")
+            return True
         if name in {"div", "section", "article", "main", "header",
-                    "footer", "aside", "nav", "figure", "figcaption"}:
+                    "footer", "aside", "nav", "figure", "form"}:
             self._walk_div_like(state, child)
+            return True
+        if name == "fieldset":
+            self._walk_fieldset(state, child)
+            return True
+        if name == "dl":
+            self._walk_definition_list(state, child)
+            return True
+        if name in {"dt", "dd"}:
+            style = "DefinitionTerm" if name == "dt" else "DefinitionData"
+            self._add_paragraph_from_element(
+                state, child, override_style=style)
             return True
         return False
 

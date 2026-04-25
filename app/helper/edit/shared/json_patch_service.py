@@ -87,13 +87,16 @@ def edit_extracted_json(
                 detail=f"Invalid edit payload: {str(exc)}",
             ) from exc
 
-    normalized_extension = _normalize_edit_extension(extension_hint)
+    normalized_extension = _normalize_edit_extension(
+        extension_hint or _infer_edit_extension(request_data)
+    )
     allowed_aliases = _allowed_extension_aliases(normalized_extension)
     source_data = _coerce_request_extracted_data(
         request_data.extracted_data,
         allowed_extensions=allowed_aliases,
     )
     document = source_data.model_dump()
+    _merge_model_extra(document, source_data)
 
     try:
         for index, instruction in enumerate(request_data.instructions):
@@ -150,6 +153,18 @@ def _coerce_request_extracted_data(
     return payload.extracted_data
 
 
+def _merge_model_extra(document: dict[str, Any], model: ExtractedData) -> None:
+    """Carry extra ExtractedData fields (for example HTML metadata) into edit payload."""
+    extras = getattr(model, "model_extra", None)
+    if not isinstance(extras, dict):
+        return
+
+    for key, value in extras.items():
+        if key in document:
+            continue
+        document[key] = value
+
+
 def _normalize_edit_extension(extension_hint: str | None) -> str:
     """Normalize extension used in EditResponse for structured document edits."""
     normalized = str(extension_hint or "docx").strip().lower()
@@ -160,6 +175,28 @@ def _normalize_edit_extension(extension_hint: str | None) -> str:
     if normalized in {"txt", "text"}:
         return "txt"
     return "docx"
+
+
+def _infer_edit_extension(request_data: EditRequest) -> str | None:
+    """Infer edit extension from request payload when callers omit a hint."""
+    extracted_payload = request_data.extracted_data
+
+    if isinstance(extracted_payload, ExtractResponse):
+        return extracted_payload.extension
+
+    metadata = getattr(extracted_payload, "model_extra", None)
+    if isinstance(metadata, dict):
+        source_type = metadata.get("source_type")
+        if isinstance(source_type, str) and source_type.strip():
+            return source_type
+
+        nested_metadata = metadata.get("metadata")
+        if isinstance(nested_metadata, dict):
+            nested_source_type = nested_metadata.get("source_type")
+            if isinstance(nested_source_type, str) and nested_source_type.strip():
+                return nested_source_type
+
+    return None
 
 
 def _allowed_extension_aliases(normalized_extension: str) -> set[str]:
@@ -212,6 +249,11 @@ def _apply_generic_instruction(
 
     if op == "replace":
         _replace_value(parent, key, value, idx)
+        _sync_text_containers_after_direct_replace(
+            document=document,
+            path=path,
+            updated_value=value,
+        )
         return
 
     _sync_top_level_order_for_generic_remove(document, tokens)
@@ -265,12 +307,25 @@ def _replace_text(document: dict[str, Any], instruction: dict[str, Any], idx: in
     path = _required_path(instruction.get("path"), idx, "replace_text")
     old_value = instruction.get("old_value")
     new_value = instruction.get("new_value")
-    count = instruction.get("count")
+    count_raw = instruction.get("count")
+    count: int | None = None
 
     if old_value is None or new_value is None:
         raise ValueError(
             f"Instruction[{idx}] old_value and new_value are required for replace_text"
         )
+
+    if count_raw is not None:
+        try:
+            count = int(count_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Instruction[{idx}] count must be an integer"
+            ) from exc
+        if count < 0:
+            raise ValueError(
+                f"Instruction[{idx}] count must be >= 0"
+            )
 
     parent, key = _resolve_parent(document, path)
     target = _read_container_value(parent, key, idx)
@@ -281,7 +336,7 @@ def _replace_text(document: dict[str, Any], instruction: dict[str, Any], idx: in
     updated = target.replace(old_value, new_value) if count is None else target.replace(
         old_value,
         new_value,
-        int(count),
+        count,
     )
     _write_container_value(parent, key, updated, idx)
     _sync_text_containers_after_replace(
@@ -684,9 +739,15 @@ def _append_missing_document_order_items(
     seen: set[tuple[str, int]],
     limits: dict[str, int],
 ) -> None:
-    """Append missing top-level body items to document_order."""
-    for item_type in ("paragraph", "table", "media"):
-        for item_index in range(limits[item_type]):
+    """Append missing top-level items, interleaving by logical index."""
+    order_types = ("paragraph", "table", "media")
+    max_len = max((limits.get(item_type, 0)
+                  for item_type in order_types), default=0)
+
+    for item_index in range(max_len):
+        for item_type in order_types:
+            if item_index >= limits.get(item_type, 0):
+                continue
             if (item_type, item_index) in seen:
                 continue
             normalized.append({"type": item_type, "index": item_index})
@@ -882,6 +943,94 @@ def _sync_text_containers_after_replace(
         )
 
 
+def _sync_text_containers_after_direct_replace(
+    document: dict[str, Any],
+    path: str,
+    updated_value: Any,
+) -> None:
+    """Keep dependent text containers aligned after generic replace on `.../text`."""
+    if not isinstance(updated_value, str):
+        return
+
+    tokens = _decode_pointer_tokens(path)
+    if not tokens or tokens[-1] != "text":
+        return
+
+    if _sync_direct_replace_for_paragraph(document, tokens, updated_value):
+        return
+
+    _sync_direct_replace_for_cell(document, tokens, updated_value)
+
+
+def _sync_direct_replace_for_paragraph(
+    document: dict[str, Any],
+    tokens: list[str],
+    updated_value: str,
+) -> bool:
+    """Sync paragraph text/runs for generic replace operations."""
+    paragraph_token_position = _last_token_position(tokens, "paragraphs")
+    if paragraph_token_position == -1 or paragraph_token_position + 1 >= len(tokens):
+        return False
+
+    paragraph = _resolve_value_from_tokens(
+        document,
+        tokens[: paragraph_token_position + 2],
+    )
+    if not isinstance(paragraph, dict):
+        return False
+
+    remaining_tokens = tokens[paragraph_token_position + 2:]
+    if remaining_tokens == ["text"]:
+        _sync_runs_for_replaced_paragraph_text(paragraph, updated_value)
+        return True
+
+    if len(remaining_tokens) == 3 and remaining_tokens[0] == "runs":
+        paragraph["text"] = "".join(
+            str(run.get("text") or "")
+            for run in paragraph.get("runs", [])
+            if isinstance(run, dict)
+        )
+        return True
+
+    return False
+
+
+def _sync_direct_replace_for_cell(
+    document: dict[str, Any],
+    tokens: list[str],
+    updated_value: str,
+) -> None:
+    """Sync table cell text and paragraphs for generic replace operations."""
+    cell_token_position = _last_token_position(tokens, "cells")
+    if cell_token_position == -1 or cell_token_position + 1 >= len(tokens):
+        return
+
+    cell = _resolve_value_from_tokens(
+        document, tokens[: cell_token_position + 2])
+    if not isinstance(cell, dict):
+        return
+
+    if tokens[cell_token_position + 2:] != ["text"]:
+        return
+
+    # Cell text is derived from paragraph content during normalization.
+    cell["paragraphs"] = [_build_paragraph_payload(updated_value, 0)]
+
+
+def _sync_runs_for_replaced_paragraph_text(
+    paragraph: dict[str, Any],
+    updated_value: str,
+) -> None:
+    """Ensure paragraph runs remain compatible with directly replaced paragraph text."""
+    runs = paragraph.get("runs")
+    if not isinstance(runs, list) or not runs:
+        paragraph["runs"] = _build_default_runs(updated_value)
+        return
+
+    first_run = runs[0] if isinstance(runs[0], dict) else {}
+    paragraph["runs"] = [{**first_run, "index": 0, "text": updated_value}]
+
+
 def _last_token_position(tokens: list[str], token: str) -> int:
     """Return the last position of a token in a pointer token list."""
     for position in range(len(tokens) - 1, -1, -1):
@@ -929,8 +1078,14 @@ def _sync_runs_from_paragraph_text(
         if remaining == 0:
             break
 
-    if replacements_applied == 0 and len(runs) == 1 and isinstance(runs[0], dict):
-        runs[0]["text"] = updated_value
+    # If no per-run replacement happened but paragraph text changed, the match likely
+    # spanned run boundaries. Collapse to one run so text stays consistent.
+    if replacements_applied == 0:
+        composed = "".join(
+            str(run.get("text") or "") for run in runs if isinstance(run, dict)
+        )
+        if composed != updated_value:
+            _sync_runs_for_replaced_paragraph_text(paragraph, updated_value)
 
 
 def _get_run_replace_count(run: Any, old_value: str, remaining: int | None) -> int:

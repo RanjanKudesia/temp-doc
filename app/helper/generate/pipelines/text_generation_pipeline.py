@@ -68,7 +68,13 @@ class TextGenerationPipeline:
         """Append a single paragraph and blank separator line."""
         if paragraph is None:
             return
-        lines.append((paragraph.text or "").strip())
+        text = (paragraph.text or "").strip()
+        if paragraph.is_bullet:
+            text = f"- {text}"
+        elif paragraph.is_numbered:
+            fmt = (paragraph.numbering_format or "1.").rstrip()
+            text = f"{fmt} {text}"
+        lines.append(text)
         lines.append("")
 
     def _append_table_lines(self, table, lines: list[str]) -> None:

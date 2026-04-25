@@ -22,7 +22,7 @@ class ExtractedMediaItem(BaseModel):
     source: dict | None = None
     base64_data: str | None = None
     base64: str | None = None
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedRun(BaseModel):
@@ -41,7 +41,7 @@ class ExtractedRun(BaseModel):
     highlight_color: str | None = None
     hyperlink_url: str | None = None
     embedded_media: list[ExtractedMediaItem] = Field(default_factory=list)
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedStyleFont(BaseModel):
@@ -54,7 +54,7 @@ class ExtractedStyleFont(BaseModel):
     underline: bool | None = None
     color_rgb: str | None = None
     highlight_color: str | None = None
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedStyle(BaseModel):
@@ -64,7 +64,7 @@ class ExtractedStyle(BaseModel):
     name: str | None = None
     type: str | None = None
     font: ExtractedStyleFont | None = None
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedDocumentDefaults(BaseModel):
@@ -73,7 +73,27 @@ class ExtractedDocumentDefaults(BaseModel):
     font_name: str | None = None
     font_size_pt: float | None = None
     color_rgb: str | None = None
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
+
+
+class ListInfo(BaseModel):
+    """List formatting for a paragraph."""
+
+    kind: Literal["bullet", "numbered"] | None = None
+    numbering_format: str | None = None
+    level: int = 0
+    start: int | None = None
+    model_config = ConfigDict(extra="allow")
+
+
+class SourceInfo(BaseModel):
+    """Source HTML element metadata for tracing back to the original markup."""
+
+    format: str | None = None
+    tag: str | None = None
+    attrs: dict[str, Any] = Field(default_factory=dict)
+    raw_html: str | None = None
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedParagraph(BaseModel):
@@ -82,15 +102,17 @@ class ExtractedParagraph(BaseModel):
     index: int
     text: str | None = None
     style: str | None = None
+    code_fence_language: str | None = None
     is_bullet: bool | None = None
     is_numbered: bool | None = None
-    list_info: dict | None = None
+    list_info: ListInfo | None = None
     numbering_format: str | None = None
     list_level: int | None = None
     alignment: str | None = None
     direction: str | None = None
     runs: list[ExtractedRun] = Field(default_factory=list)
-    model_config = ConfigDict(extra="ignore")
+    source: SourceInfo | None = None
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedTableCell(BaseModel):
@@ -100,10 +122,12 @@ class ExtractedTableCell(BaseModel):
     paragraphs: list[ExtractedParagraph] = Field(default_factory=list)
     tables: list["ExtractedTable"] = Field(default_factory=list)
     is_header: bool | None = None
+    cell_index: int | None = None
     colspan: int | None = None
     rowspan: int | None = None
     nested_table_indices: list[int] = Field(default_factory=list)
-    model_config = ConfigDict(extra="ignore")
+    source: SourceInfo | None = None
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedTableRow(BaseModel):
@@ -111,7 +135,7 @@ class ExtractedTableRow(BaseModel):
 
     cells: list[ExtractedTableCell] = Field(default_factory=list)
     row_index: int | None = None
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedTable(BaseModel):
@@ -122,7 +146,8 @@ class ExtractedTable(BaseModel):
     column_count: int | None = None
     style: str | None = None
     rows: list[ExtractedTableRow] = Field(default_factory=list)
-    model_config = ConfigDict(extra="ignore")
+    source: SourceInfo | None = None
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedOrderItem(BaseModel):
@@ -132,16 +157,36 @@ class ExtractedOrderItem(BaseModel):
     index: int
 
 
+class HtmlMetadata(BaseModel):
+    """Rich metadata extracted from an HTML document."""
+
+    source_type: str | None = None
+    extraction_mode: str | None = None
+    title: str | None = None
+    doctype: str | None = None
+    full_html: str | None = None
+    head_html: str | None = None
+    body_html: str | None = None
+    html_attributes: dict[str, Any] = Field(default_factory=dict)
+    body_attributes: dict[str, Any] = Field(default_factory=dict)
+    style_blocks: list[str] = Field(default_factory=list)
+    meta_tags: list[dict[str, Any]] = Field(default_factory=list)
+    link_tags: list[dict[str, Any]] = Field(default_factory=list)
+    script_blocks: list[dict[str, Any]] = Field(default_factory=list)
+    model_config = ConfigDict(extra="allow")
+
+
 class ExtractedData(BaseModel):
     """Complete extracted document data in JSON format."""
 
+    metadata: HtmlMetadata | dict[str, Any] | None = None
     document_order: list[ExtractedOrderItem] = Field(default_factory=list)
     document_defaults: ExtractedDocumentDefaults | None = None
     styles: list[ExtractedStyle] = Field(default_factory=list)
     paragraphs: list[ExtractedParagraph] = Field(default_factory=list)
     tables: list[ExtractedTable] = Field(default_factory=list)
     media: list[ExtractedMediaItem] = Field(default_factory=list)
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
 
 # ==================== XML Format Schemas ====================
@@ -152,7 +197,7 @@ class ExtractedXmlPart(BaseModel):
 
     path: str
     xml: str
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedXmlRun(BaseModel):
@@ -168,7 +213,7 @@ class ExtractedXmlRun(BaseModel):
     font_size_pt: float | None = None
     color_rgb: str | None = None
     hyperlink_url: str | None = None
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedXmlParagraph(BaseModel):
@@ -178,7 +223,7 @@ class ExtractedXmlParagraph(BaseModel):
     text: str | None = None
     alignment: str | None = None
     runs: list[ExtractedXmlRun] = Field(default_factory=list)
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedXmlData(BaseModel):
@@ -189,7 +234,7 @@ class ExtractedXmlData(BaseModel):
     document_defaults: ExtractedDocumentDefaults | None = None
     styles: list[ExtractedStyle] = Field(default_factory=list)
     parsed_body: bool | None = None
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
 
 class ExtractedPptData(BaseModel):
@@ -219,7 +264,7 @@ class ExtractedPptData(BaseModel):
 
     # Additional metadata kept from extraction for compatibility
     source_xml_metadata: dict[str, Any] | None = None
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="allow")
 
 
 # ==================== API Request/Response Schemas ====================

@@ -6,6 +6,7 @@ from .markdown_extraction_pipeline import MarkdownExtractionPipeline
 from .text_extraction_pipeline import TextExtractionPipeline
 from .ppt_extraction_pipeline import PptExtractionPipeline
 from .pdf_conversion_pipeline import PdfConversionPipeline
+from .pdf_extraction_pipeline import PdfExtractionPipeline
 
 __all__ = [
     "DocxExtractionPipeline",
@@ -14,4 +15,5 @@ __all__ = [
     "TextExtractionPipeline",
     "PptExtractionPipeline",
     "PdfConversionPipeline",
+    "PdfExtractionPipeline",
 ]
