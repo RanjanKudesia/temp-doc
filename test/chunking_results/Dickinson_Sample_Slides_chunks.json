@@ -1,0 +1,34 @@
+{
+  "filename": "Dickinson_Sample_Slides.pptx",
+  "extension": "pptx",
+  "chunk_count": 9,
+  "chunks": [
+    {
+      "text": "Author\nDepartment\nDate\nLocation"
+    },
+    {
+      "text": "Author\nDepartment\nDate\nLocation\nNotes: Cover slide option #1 2"
+    },
+    {
+      "text": "Presentation Title\nAuthor\nDepartment\nDate\nLocation\nNotes: Cover slide option #3 3"
+    },
+    {
+      "text": "Additional Notes - Lorem ipsum dolor sit amet, consectetuer adipiscing elit. Aenean commodo ligula eget dolor. Aenean massa. Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Donec quam felis, ultricies nec, pellentesque eu, pretium quis, sem"
+    },
+    {
+      "text": "Table:\nColumn A | B | C | D\nXXXXXXXX | XX | XX | XX\nXXXXXXXX | XX | XX | XX\nXXXXXXXX | XX | XX | XX\nXXXXXXXX | XX | XX | XX\nXXXXXXXX | XX | XX | XX\nXXXXXXXX | XX | XX | XX"
+    },
+    {
+      "text": "Lorem ipsum dolor sit amet\nAenean commodo ligula eget dolor\nCum sociis natoque penatibus et magnis dis parturient montes\nDonec quam felis, ultricies nec, pellentesque eu\nLorem ipsum dolor sit amet, consectetuer adipiscing elit\nAenean massa\nAenean commodo ligula eget dolor"
+    },
+    {
+      "text": "Lorem ipsum dolor sit amet, consectetuer adipiscing elit. Aenean commodo ligula eget dolor. Aenean massa. Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Donec quam felis, ultricies nec, pellentesque eu, pretium quis, sem.\nAenean massa. Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Donec quam felis, ultricies nec, pellentesque eu, pretium quis, sem."
+    },
+    {
+      "text": "Type image caption here."
+    },
+    {
+      "text": "Notes: Blank slide 9"
+    }
+  ]
+}

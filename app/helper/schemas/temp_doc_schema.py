@@ -269,6 +269,15 @@ class ChunkResponse(BaseModel):
     chunks: list[ChunkItem] = Field(default_factory=list)
 
 
+class ChunkingResponse(BaseModel):
+    """Response model for the combined extract-then-chunk pipeline."""
+
+    filename: str
+    extension: str
+    chunk_count: int
+    chunks: list[ChunkItem] = Field(default_factory=list)
+
+
 class PatchInstruction(BaseModel):
     """Single JSON patch-like instruction for extracted payload editing."""
 

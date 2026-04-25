@@ -9,8 +9,10 @@ from ..helper.extract import extract_document
 from ..helper.generate import generate_document
 from ..helper.chunks import create_chunks
 from ..helper.edit import edit_document
+from ..helper.chunking import chunk_document
 from ..schemas.temp_doc_schema import (
     ChunkResponse,
+    ChunkingResponse,
     EditResponse,
     ExtractResponse,
     PptEditResponse,
@@ -219,3 +221,22 @@ async def edit_endpoint(
     - remove_table_column: remove a column from an existing table
     """
     return edit_document(request_body)
+
+
+@router.post("/chunking")
+async def chunking_endpoint(
+    file: UploadFile,
+    include_media: Annotated[
+        bool,
+        Query(description="Include media during extraction (default False for speed)."),
+    ] = False,
+) -> ChunkingResponse:
+    """Extract a document and return text chunks in one step.
+
+    - **file**: Document file (DOCX, PDF, PPTX, HTML, MD, TXT)
+    - **include_media**: Include media objects during extraction (default False)
+
+    Extracts the file content, then produces meaningful text chunks.
+    Does not require a separate /extract call first.
+    """
+    return await chunk_document(file, include_media=include_media)
