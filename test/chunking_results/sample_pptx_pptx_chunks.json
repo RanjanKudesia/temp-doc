@@ -1,0 +1,13 @@
+{
+  "filename": "sample_pptx.pptx",
+  "extension": "pptx",
+  "chunk_count": 2,
+  "chunks": [
+    {
+      "text": "Author\nDepartment\nDate\nLocation\nAuthor\nDepartment\nDate\nLocation\nNotes: Cover slide option #1 2\nPresentation Title\nAuthor\nDepartment\nDate\nLocation\nNotes: Cover slide option #3 3\nAdditional Notes - Lorem ipsum dolor sit amet, consectetuer adipiscing elit. Aenean commodo ligula eget dolor. Aenean massa. Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Donec quam felis, ultricies nec, pellentesque eu, pretium quis, sem\nTable:\nColumn A | B | C | D\nXXXXXXXX | XX | XX | XX\nXXXXXXXX | XX | XX | XX\nXXXXXXXX | XX | XX | XX\nXXXXXXXX | XX | XX | XX\nXXXXXXXX | XX | XX | XX\nXXXXXXXX | XX | XX | XX\nLorem ipsum dolor sit amet\nAenean commodo ligula eget dolor\nCum sociis natoque penatibus et magnis dis parturient montes\nDonec quam felis, ultricies nec, pellentesque eu\nLorem ipsum dolor sit amet, consectetuer adipiscing elit\nAenean massa\nAenean commodo ligula eget dolor"
+    },
+    {
+      "text": "Lorem ipsum dolor sit amet, consectetuer adipiscing elit. Aenean commodo ligula eget dolor. Aenean massa. Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Donec quam felis, ultricies nec, pellentesque eu, pretium quis, sem.\nAenean massa. Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Donec quam felis, ultricies nec, pellentesque eu, pretium quis, sem.\nType image caption here.\nNotes: Blank slide 9"
+    }
+  ]
+}

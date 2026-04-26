@@ -19,6 +19,10 @@ from app.schemas.temp_doc_schema import (
 _HEADING_RE = re.compile(r"heading\s*([1-6])", re.IGNORECASE)
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
 
+# Fields ChunkEngine actually reads from each paragraph — used to build lean dicts
+_PARAGRAPH_FIELDS = ("text", "style", "is_bullet",
+                     "is_numbered", "list_level", "numbering_format")
+
 
 @dataclass
 class _ChunkUnit:
@@ -51,14 +55,14 @@ class ChunkEngine:
         for unit in units:
             chunks.extend(self._split_unit(unit))
 
-        if has_heading_units:
-            return chunks
-
         return self._merge_short_chunks(chunks)
 
     def chunk_pptx(self, extracted_data: ExtractedPptData) -> list[str]:
         """Chunk PPTX extracted data: one chunk per slide, split if oversized."""
-        paragraph_map = {p.index: p for p in extracted_data.paragraphs}
+        paragraph_map: dict[int, dict] = {
+            p.index: {f: getattr(p, f, None) for f in _PARAGRAPH_FIELDS}
+            for p in extracted_data.paragraphs
+        }
         table_map = {t.index: t for t in extracted_data.tables}
 
         chunks: list[str] = []
@@ -72,7 +76,7 @@ class ChunkEngine:
             unit = _ChunkUnit(heading=header, parts=parts)
             chunks.extend(self._split_unit(unit))
 
-        return chunks
+        return self._merge_short_chunks(chunks)
 
     # ── Slide helpers ─────────────────────────────────────────────────────────
 
@@ -111,7 +115,12 @@ class ChunkEngine:
     # ── DOCX unit builders ────────────────────────────────────────────────────
 
     def _build_docx_units(self, extracted_data: ExtractedData) -> list[_ChunkUnit]:
-        paragraph_map = {p.index: p for p in extracted_data.paragraphs}
+        # Build lean dicts with only the 6 fields ChunkEngine reads — avoids
+        # attribute lookups on Pydantic model objects for every paragraph.
+        paragraph_map: dict[int, dict] = {
+            p.index: {f: getattr(p, f, None) for f in _PARAGRAPH_FIELDS}
+            for p in extracted_data.paragraphs
+        }
         table_map = {t.index: t for t in extracted_data.tables}
 
         units: list[_ChunkUnit] = []
@@ -167,7 +176,9 @@ class ChunkEngine:
         self, extracted_data: ExtractedData
     ) -> list[_ChunkUnit]:
         fallback_parts = [
-            self._format_paragraph(p) for p in extracted_data.paragraphs
+            self._format_paragraph({f: getattr(p, f, None)
+                                   for f in _PARAGRAPH_FIELDS})
+            for p in extracted_data.paragraphs
         ]
         fallback_parts = [p for p in fallback_parts if p]
         if fallback_parts:
@@ -211,16 +222,16 @@ class ChunkEngine:
 
     # ── Formatting ────────────────────────────────────────────────────────────
 
-    def _format_paragraph(self, paragraph: ExtractedParagraph) -> str:
-        text = self._clean_text(paragraph.text)
+    def _format_paragraph(self, paragraph: dict) -> str:
+        text = self._clean_text(paragraph["text"])
         if not text:
             return ""
-        if paragraph.is_bullet:
-            indent = "  " * max(paragraph.list_level or 0, 0)
+        if paragraph["is_bullet"]:
+            indent = "  " * max(paragraph["list_level"] or 0, 0)
             return f"{indent}- {text}".strip()
-        if paragraph.is_numbered:
-            indent = "  " * max(paragraph.list_level or 0, 0)
-            marker = paragraph.numbering_format or "1."
+        if paragraph["is_numbered"]:
+            indent = "  " * max(paragraph["list_level"] or 0, 0)
+            marker = paragraph["numbering_format"] or "1."
             return f"{indent}{marker} {text}".strip()
         return text
 
@@ -238,8 +249,8 @@ class ChunkEngine:
             return ""
         return "Table:\n" + "\n".join(row_texts)
 
-    def _is_heading(self, paragraph: ExtractedParagraph) -> bool:
-        style_name = (paragraph.style or "").strip()
+    def _is_heading(self, paragraph: dict) -> bool:
+        style_name = (paragraph["style"] or "").strip()
         if not style_name:
             return False
         if style_name.lower() == "title":
@@ -255,38 +266,29 @@ class ChunkEngine:
         current_length = 0
 
         for part in unit.parts:
-            self._process_unit_part(
-                part, chunks, current_parts, current_length)
+            if len(part) > self.max_chunk_chars:
+                if current_parts:
+                    chunks.append("\n".join(current_parts).strip())
+                    current_parts.clear()
+                    current_length = 0
+                chunks.extend(self._split_large_text(part))
+                continue
+
+            separator_length = 1 if current_parts else 0
+            candidate_length = current_length + separator_length + len(part)
+            if candidate_length <= self.max_chunk_chars:
+                current_parts.append(part)
+                current_length = candidate_length
+            else:
+                if current_parts:
+                    chunks.append("\n".join(current_parts).strip())
+                current_parts = [part]
+                current_length = len(part)
 
         if current_parts:
             chunks.append("\n".join(current_parts).strip())
 
         return [chunk for chunk in chunks if chunk]
-
-    def _process_unit_part(
-        self,
-        part: str,
-        chunks: list[str],
-        current_parts: list[str],
-        current_length: int,
-    ) -> None:
-        if len(part) > self.max_chunk_chars:
-            if current_parts:
-                chunks.append("\n".join(current_parts).strip())
-                current_parts.clear()
-            chunks.extend(self._split_large_text(part))
-            return
-
-        separator_length = 1 if current_parts else 0
-        candidate_length = current_length + separator_length + len(part)
-        if candidate_length <= self.max_chunk_chars:
-            current_parts.append(part)
-            return
-
-        if current_parts:
-            chunks.append("\n".join(current_parts).strip())
-            current_parts.clear()
-        current_parts.append(part)
 
     def _split_large_text(self, text: str) -> list[str]:
         sentences = [
@@ -322,10 +324,13 @@ class ChunkEngine:
         if not chunks:
             return []
         merged: list[str] = []
+        # Soft ceiling: allow merging tiny chunks even if the result slightly
+        # exceeds max_chunk_chars (prevents orphan footer/straggler chunks).
+        soft_max = self.max_chunk_chars + self.min_chunk_chars
         for chunk in chunks:
             if merged and len(chunk) < self.min_chunk_chars:
                 candidate = f"{merged[-1]}\n{chunk}".strip()
-                if len(candidate) <= self.max_chunk_chars:
+                if len(candidate) <= soft_max:
                     merged[-1] = candidate
                     continue
             merged.append(chunk)

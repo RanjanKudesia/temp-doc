@@ -127,6 +127,7 @@ async def chunk_document(
         "Chunking pipeline complete for %s: %d chunks produced",
         file.filename, len(chunks),
     )
+    print(f"[chunking] {file.filename} → {len(chunks)} chunk(s) created")
 
     return ChunkingResponse(
         filename=file.filename,

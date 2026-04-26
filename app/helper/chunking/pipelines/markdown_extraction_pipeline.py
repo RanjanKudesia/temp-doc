@@ -4,6 +4,36 @@ import logging
 import re
 from typing import Any
 
+# Strip inline markdown syntax from plain text (used for the stored `text` field)
+_MD_STRIP_RE = re.compile(
+    r'\*{3}(.+?)\*{3}'          # ***bold+italic***
+    r'|\*{2}(.+?)\*{2}'         # **bold**
+    r'|_{2}(.+?)_{2}'            # __bold__
+    r'|\*(.+?)\*'               # *italic*
+    r'|_(.+?)_'                  # _italic_
+    r'|~~(.+?)~~'                # ~~strikethrough~~
+    r'|`(.+?)`'                  # `code`
+    r'|!\[([^\]]*)\]\([^)]*\)'  # ![alt](url) — keep alt text
+    r'|\[([^\]]+)\]\([^)]*\)'   # [text](url) — keep link text
+    r'|\\(.)',                   # \escape — keep char
+    re.DOTALL,
+)
+
+
+def _strip_inline_md(text: str) -> str:
+    """Remove inline markdown syntax, keeping the visible content."""
+    def _repl(m: re.Match) -> str:
+        for g in m.groups():
+            if g is not None:
+                return g
+        return m.group(0)
+    result = _MD_STRIP_RE.sub(_repl, text)
+    # Second pass: strip markers exposed by the first pass
+    # (e.g. `**bold**` → **bold** on pass 1 → bold on pass 2)
+    if result != text:
+        result = _MD_STRIP_RE.sub(_repl, result)
+    return result
+
 
 class MarkdownExtractionPipeline:
     """Extract Markdown content to JSON format."""
@@ -55,6 +85,9 @@ class MarkdownExtractionPipeline:
                 block_lines, line_index = self._collect_paragraph_block(
                     lines, line_index, line)
             paragraph = self._build_paragraph(block_lines, paragraph_index)
+            if not (paragraph.get("text") or "").strip():
+                line_index = line_index  # already advanced
+                continue
             if include_media:
                 media.extend(self._extract_inline_media(
                     block_lines, paragraph_index))
@@ -261,7 +294,7 @@ class MarkdownExtractionPipeline:
 
         return {
             "index": paragraph_index,
-            "text": raw,
+            "text": _strip_inline_md(raw),
             "style": style,
             "code_fence_language": code_fence_language,
             "is_bullet": is_bullet,

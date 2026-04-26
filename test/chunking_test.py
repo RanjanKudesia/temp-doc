@@ -135,8 +135,9 @@ def run_chunking_test(base_url: str) -> dict:
                     chunk_count = body.get(
                         "chunk_count", len(body.get("chunks", [])))
 
-                    # Save chunks to file
-                    out_path = RESULTS_DIR / f"{path.stem}_chunks.json"
+                    # Save chunks to file — include extension so same-stem files don't overwrite
+                    out_path = RESULTS_DIR / \
+                        f"{path.stem}_{path.suffix.lstrip('.')}_chunks.json"
                     out_path.write_text(
                         json.dumps(body, indent=2, ensure_ascii=False),
                         encoding="utf-8",

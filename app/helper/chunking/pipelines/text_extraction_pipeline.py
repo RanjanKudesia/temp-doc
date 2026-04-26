@@ -6,6 +6,7 @@ from typing import Any
 
 BULLET_PATTERN = r"^\s*[-*+]\s+"
 NUMBERED_PATTERN = r"^\s*\d+[.)]\s+"
+_DIVIDER_RE = re.compile(r'^[-=*_~]{3,}\s*$')
 
 
 class TextExtractionPipeline:
@@ -139,6 +140,10 @@ class TextExtractionPipeline:
         for line in lines:
             stripped = line.strip()
             if not stripped:
+                flush_block()
+                continue
+
+            if _DIVIDER_RE.match(stripped):
                 flush_block()
                 continue
 
