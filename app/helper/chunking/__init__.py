@@ -54,7 +54,7 @@ SUPPORTED_EXTENSIONS = {
 
 async def chunk_document(
     file: UploadFile,
-    strategy: ChunkingStrategy = "structured",
+    strategy: ChunkingStrategy = "simple",
 ) -> ChunkingResponse:
     """Extract an uploaded document and return text chunks.
 

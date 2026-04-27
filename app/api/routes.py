@@ -237,7 +237,7 @@ async def chunking_endpoint(
                 "faster, no heading detection. Non-PDF files fall back to 'structured'."
             )
         ),
-    ] = "structured",
+    ] = "simple",
 ) -> ChunkingResponse:
     """Extract a document and return text chunks in one step.
 
