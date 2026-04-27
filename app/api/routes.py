@@ -1,7 +1,7 @@
 """API routes for temp-doc service."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, UploadFile, Body, Query, Response
 
@@ -226,12 +226,25 @@ async def edit_endpoint(
 @router.post("/chunking")
 async def chunking_endpoint(
     file: UploadFile,
+    strategy: Annotated[
+        Literal["structured", "simple"],
+        Query(
+            description=(
+                "Chunking strategy. "
+                "'structured' (default): full extraction + section-aware chunking — "
+                "preserves headings, bullets, and tables. "
+                "'simple': PyMuPDF-only sliding-window chunker for PDFs — "
+                "faster, no heading detection. Non-PDF files fall back to 'structured'."
+            )
+        ),
+    ] = "structured",
 ) -> ChunkingResponse:
     """Extract a document and return text chunks in one step.
 
     - **file**: Document file (DOCX, PDF, PPTX, HTML, MD, TXT)
+    - **strategy**: ``structured`` (default) or ``simple`` — see query param description
 
     Extracts the file content, then produces meaningful text chunks.
     Does not require a separate /extract call first.
     """
-    return await chunk_document(file)
+    return await chunk_document(file, strategy=strategy)
