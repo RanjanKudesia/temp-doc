@@ -46,14 +46,12 @@ _text = TextExtractionPipeline()
 def extract_bytes(
     file_bytes: bytes,
     extension: str,
-    include_media: bool,
 ) -> tuple[ExtractedData | ExtractedPptData, str]:
     """Extract raw bytes using the appropriate pipeline.
 
     Args:
         file_bytes: Raw file content.
         extension:  Lowercase file extension without dot (e.g. "docx").
-        include_media: Whether to extract and embed media.
 
     Returns:
         (validated_extracted_data, normalized_extension)
@@ -64,28 +62,27 @@ def extract_bytes(
     ext = extension.lower().lstrip(".")
 
     if ext == "docx":
-        raw: dict[str, Any] = _docx.run(
-            file_bytes, include_media=include_media)
+        raw: dict[str, Any] = _docx.run(file_bytes)
         return ExtractedData.model_validate(raw), "docx"
 
     if ext == "pdf":
-        raw = _pdf.run(file_bytes, include_media=include_media)
+        raw = _pdf.run(file_bytes)
         return ExtractedData.model_validate(raw), "pdf"
 
     if ext in ("ppt", "pptx"):
-        raw = _ppt.run(file_bytes, include_media=include_media)
+        raw = _ppt.run(file_bytes)
         return ExtractedPptData.model_validate(raw), "pptx"
 
     if ext in ("html", "htm"):
-        raw = _html.run(file_bytes, include_media=include_media)
+        raw = _html.run(file_bytes)
         return ExtractedData.model_validate(raw), "html"
 
     if ext in ("md", "markdown"):
-        raw = _markdown.run(file_bytes, include_media=include_media)
+        raw = _markdown.run(file_bytes)
         return ExtractedData.model_validate(raw), "markdown"
 
     if ext == "txt":
-        raw = _text.run(file_bytes, include_media=include_media)
+        raw = _text.run(file_bytes)
         return ExtractedData.model_validate(raw), "text"
 
     raise ValueError(f"Unsupported extension: .{ext}")

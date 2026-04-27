@@ -226,17 +226,12 @@ async def edit_endpoint(
 @router.post("/chunking")
 async def chunking_endpoint(
     file: UploadFile,
-    include_media: Annotated[
-        bool,
-        Query(description="Include media during extraction (default False for speed)."),
-    ] = False,
 ) -> ChunkingResponse:
     """Extract a document and return text chunks in one step.
 
     - **file**: Document file (DOCX, PDF, PPTX, HTML, MD, TXT)
-    - **include_media**: Include media objects during extraction (default False)
 
     Extracts the file content, then produces meaningful text chunks.
     Does not require a separate /extract call first.
     """
-    return await chunk_document(file, include_media=include_media)
+    return await chunk_document(file)

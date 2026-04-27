@@ -12,6 +12,8 @@ Advantages over python-docx:
 - Numbering root loaded once; results cached by (numId, ilvl)
 """
 
+# pylint: disable=c-extension-no-member
+
 import logging
 import time
 from io import BytesIO
@@ -41,7 +43,7 @@ class DocxExtractionPipeline:
 
     # ── Public ────────────────────────────────────────────────────────────────
 
-    def run(self, file_bytes: bytes, include_media: bool = True) -> dict[str, Any]:
+    def run(self, file_bytes: bytes) -> dict[str, Any]:
         """Parse a DOCX byte stream and return extracted JSON payload."""
         t0 = time.perf_counter()
         self.logger.info(
@@ -84,9 +86,10 @@ class DocxExtractionPipeline:
         numbering_cache: dict[tuple[int, int], str | None] = {}
 
         root_el = etree.fromstring(doc_xml)
-        body = root_el.find(f".//{_w('body')}")
-        if body is None:
+        body_candidates = root_el.findall(f".//{_w('body')}")
+        if not body_candidates:
             raise ValueError("No <w:body> element found in word/document.xml")
+        body = body_candidates[0]
 
         paragraphs: list[dict[str, Any]] = []
         tables: list[dict[str, Any]] = []
@@ -169,32 +172,8 @@ class DocxExtractionPipeline:
         # Concatenate all <w:t> text — preserves spaces correctly
         text = "".join(t_el.text or "" for t_el in p_el.iter(_w("t")))
 
-        # Style and list info live inside <w:pPr>
-        style_name: str | None = None
-        list_info: dict[str, Any] | None = None
-
-        p_pr = p_el.find(_w("pPr"))
-        if p_pr is not None:
-            # Style
-            p_style_el = p_pr.find(_w("pStyle"))
-            if p_style_el is not None:
-                style_id = p_style_el.get(_w("val"), "")
-                style_name = style_map.get(style_id, style_id) or None
-
-            # List numbering
-            num_pr = p_pr.find(_w("numPr"))
-            if num_pr is not None:
-                num_id_el = num_pr.find(_w("numId"))
-                ilvl_el = num_pr.find(_w("ilvl"))
-                num_id_val = num_id_el.get(
-                    _w("val")) if num_id_el is not None else None
-                ilvl_val = ilvl_el.get(
-                    _w("val")) if ilvl_el is not None else None
-                if num_id_val is not None:
-                    list_info = {
-                        "num_id": int(num_id_val),
-                        "level": int(ilvl_val) if ilvl_val is not None else 0,
-                    }
+        style_name, list_info = self._extract_paragraph_properties(
+            p_el, style_map)
 
         numbering_format = self._resolve_list_formatting(
             list_info, numbering_root, numbering_cache
@@ -212,6 +191,51 @@ class DocxExtractionPipeline:
             "numbering_format": numbering_format,
             "list_level": list_info.get("level") if list_info else None,
             "runs": [],  # not needed for chunking
+        }
+
+    def _extract_paragraph_properties(
+        self,
+        p_el: etree._Element,
+        style_map: dict[str, str],
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """Extract paragraph style name and list metadata from w:pPr."""
+        p_pr = p_el.find(_w("pPr"))
+        if p_pr is None:
+            return None, None
+
+        style_name = self._extract_style_name(p_pr, style_map)
+        list_info = self._extract_list_info(p_pr)
+        return style_name, list_info
+
+    def _extract_style_name(
+        self,
+        p_pr: etree._Element,
+        style_map: dict[str, str],
+    ) -> str | None:
+        """Resolve style id in w:pPr into a display style name."""
+        p_style_el = p_pr.find(_w("pStyle"))
+        if p_style_el is None:
+            return None
+        style_id = p_style_el.get(_w("val"), "")
+        return style_map.get(style_id, style_id) or None
+
+    def _extract_list_info(self, p_pr: etree._Element) -> dict[str, Any] | None:
+        """Extract numId/ilvl from w:numPr if present and valid."""
+        num_pr = p_pr.find(_w("numPr"))
+        if num_pr is None:
+            return None
+
+        num_id_el = num_pr.find(_w("numId"))
+        ilvl_el = num_pr.find(_w("ilvl"))
+        num_id_val = num_id_el.get(
+            _w("val")) if num_id_el is not None else None
+        ilvl_val = ilvl_el.get(_w("val")) if ilvl_el is not None else None
+        if num_id_val is None:
+            return None
+
+        return {
+            "num_id": int(num_id_val),
+            "level": int(ilvl_val) if ilvl_val is not None else 0,
         }
 
     def _get_list_format_flags(
@@ -264,33 +288,60 @@ class DocxExtractionPipeline:
         ilvl_str = str(ilvl)
 
         # Step 1: numId → abstractNumId
-        abstract_id_str: str | None = None
-        for num_el in root.findall(_w("num")):
-            if num_el.get(_w("numId")) == num_id_str:
-                abstract_el = num_el.find(_w("abstractNumId"))
-                if abstract_el is not None:
-                    abstract_id_str = abstract_el.get(_w("val"))
-                break
+        abstract_id_str = self._resolve_abstract_num_id(root, num_id_str)
 
         if abstract_id_str is None:
             return None
 
         # Step 2: abstractNumId + ilvl → numFmt + lvlText
+        return self._resolve_level_format(root, abstract_id_str, ilvl_str)
+
+    def _resolve_abstract_num_id(
+        self,
+        root: etree._Element,
+        num_id_str: str,
+    ) -> str | None:
+        """Resolve concrete numId to abstractNumId."""
+        for num_el in root.findall(_w("num")):
+            if num_el.get(_w("numId")) != num_id_str:
+                continue
+            abstract_el = num_el.find(_w("abstractNumId"))
+            if abstract_el is None:
+                return None
+            return abstract_el.get(_w("val"))
+        return None
+
+    def _resolve_level_format(
+        self,
+        root: etree._Element,
+        abstract_id_str: str,
+        ilvl_str: str,
+    ) -> str | None:
+        """Resolve abstract numbering level to format string."""
         for abs_num in root.findall(_w("abstractNum")):
             if abs_num.get(_w("abstractNumId")) != abstract_id_str:
                 continue
-            for lvl in abs_num.findall(_w("lvl")):
-                if lvl.get(_w("ilvl")) != ilvl_str:
-                    continue
-                num_fmt_el = lvl.find(_w("numFmt"))
-                lvl_text_el = lvl.find(_w("lvlText"))
-                if num_fmt_el is not None and lvl_text_el is not None:
-                    fmt = num_fmt_el.get(_w("val"), "")
-                    text = lvl_text_el.get(_w("val"), "")
-                    if fmt and text:
-                        return f"{fmt}:{text}"
-                return None  # found the level but missing format elements
+            return self._resolve_level_from_abstract(abs_num, ilvl_str)
+        return None
 
+    def _resolve_level_from_abstract(
+        self,
+        abs_num: etree._Element,
+        ilvl_str: str,
+    ) -> str | None:
+        """Resolve numFmt + lvlText for a specific ilvl within an abstractNum."""
+        for lvl in abs_num.findall(_w("lvl")):
+            if lvl.get(_w("ilvl")) != ilvl_str:
+                continue
+            num_fmt_el = lvl.find(_w("numFmt"))
+            lvl_text_el = lvl.find(_w("lvlText"))
+            if num_fmt_el is None or lvl_text_el is None:
+                return None
+            fmt = num_fmt_el.get(_w("val"), "")
+            text = lvl_text_el.get(_w("val"), "")
+            if fmt and text:
+                return f"{fmt}:{text}"
+            return None
         return None
 
     # ── Table ─────────────────────────────────────────────────────────────────

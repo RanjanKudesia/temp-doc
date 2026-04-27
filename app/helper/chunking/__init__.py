@@ -38,7 +38,6 @@ SUPPORTED_EXTENSIONS = {
 
 async def chunk_document(
     file: UploadFile,
-    include_media: bool = False,
 ) -> ChunkingResponse:
     """Extract an uploaded document and return text chunks.
 
@@ -46,7 +45,6 @@ async def chunk_document(
 
     Args:
         file: Uploaded file from a FastAPI route.
-        include_media: Include media during extraction (default False for speed).
 
     Returns:
         ChunkingResponse with filename, extension, chunk_count, and chunks.
@@ -94,7 +92,7 @@ async def chunk_document(
     # ── Step 1: Extract ──────────────────────────────────────────────────────
     try:
         extracted, normalized_ext = extract_bytes(
-            file_bytes, extension, include_media
+            file_bytes, extension
         )
     except ValueError as e:
         raise HTTPException(

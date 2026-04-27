@@ -28,7 +28,7 @@ import re
 import time
 from collections import Counter
 from io import BytesIO
-from typing import Any
+from typing import Any, Iterator
 
 import fitz  # PyMuPDF
 import pdfplumber
@@ -106,7 +106,7 @@ class PdfExtractionPipeline:
             raise ValueError(f"Failed to open PDF: {exc}") from exc
 
         # ── Encryption check ────────────────────────────────────────────────
-        if doc.is_encrypted:
+        if _is_pdf_encrypted(doc):
             doc.close()
             raise ValueError(
                 "PDF is password-protected. Provide an unlocked PDF."
@@ -114,8 +114,8 @@ class PdfExtractionPipeline:
 
         # ── Scanned PDF detection ────────────────────────────────────────────
         total_chars = sum(
-            len(doc[i].get_text("text").strip())
-            for i in range(len(doc))
+            len(page.get_text("text").strip())
+            for page in doc
         )
         if total_chars < _MIN_TEXT_CHARS:
             doc.close()
@@ -159,134 +159,23 @@ class PdfExtractionPipeline:
     ) -> dict[str, Any]:
         """Core extraction: per-page paragraphs + tables + images."""
 
-        # ── Pass 1: collect font sizes for heading heuristic ────────────────
-        all_font_sizes: list[float] = []
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            raw = page.get_text(
-                "dict",
-                flags=fitz.TEXT_PRESERVE_WHITESPACE,
-            )
-            for block in raw.get("blocks", []):
-                if block.get("type") != 0:
-                    continue
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
-                        sz = span.get("size", 0.0)
-                        if sz and sz > 0:
-                            all_font_sizes.append(round(sz, 1))
-
+        # ── Pass 1: heading heuristic setup ─────────────────────────────────
+        all_font_sizes = _collect_font_sizes(doc)
         body_font_size = _detect_body_font_size(all_font_sizes)
         heading_size_map = _build_heading_size_map(
             all_font_sizes, body_font_size)
 
-        # ── Pass 2: extract images (xref-based, cross-page dedup) ───────────
+        # ── Pass 2: images ───────────────────────────────────────────────────
         media: list[dict[str, Any]] = []
-        seen_xrefs: set[int] = set()
         if include_media:
-            for page_num in range(len(doc)):
-                page = doc[page_num]
-                for img_info in page.get_images(full=True):
-                    xref: int = img_info[0]
-                    if xref in seen_xrefs:
-                        continue
-                    seen_xrefs.add(xref)
-                    item = _extract_image(doc, xref, page_num)
-                    if item:
-                        media.append(item)
+            media = _extract_media_items(doc)
 
         # ── Pass 3: per-page paragraph + table extraction ───────────────────
-        all_paragraphs: list[dict[str, Any]] = []
-        all_tables: list[dict[str, Any]] = []
-        document_order: list[dict[str, Any]] = []
-        para_idx = 0
-        table_idx = 0
-
-        with pdfplumber.open(BytesIO(file_bytes)) as pdf_reader:
-            plumber_pages = pdf_reader.pages
-            for page_num in range(min(len(doc), len(plumber_pages))):
-                fitz_page = doc[page_num]
-                plumber_page = plumber_pages[page_num]
-
-                # pdfplumber table bboxes: (x0, top, x1, bottom)
-                # both fitz and pdfplumber use top-left origin on the page
-                try:
-                    plumber_tables = plumber_page.find_tables()
-                except Exception as exc:
-                    logger.debug(
-                        "pdfplumber table detection failed on page %d: %s",
-                        page_num, exc,
-                    )
-                    plumber_tables = []
-
-                table_bboxes: list[tuple[float, float, float, float]] = [
-                    t.bbox for t in plumber_tables
-                ]
-
-                # fitz text blocks
-                raw = fitz_page.get_text(
-                    "dict",
-                    flags=(
-                        fitz.TEXT_PRESERVE_WHITESPACE
-                        | fitz.TEXT_PRESERVE_LIGATURES
-                    ),
-                )
-                fitz_text_blocks = [
-                    b for b in raw.get("blocks", []) if b.get("type") == 0
-                ]
-
-                # Collect (y_top, kind, data) for this page
-                page_items: list[tuple[float, str, dict[str, Any]]] = []
-
-                # Paragraphs from fitz (exclude blocks overlapping tables)
-                for block in fitz_text_blocks:
-                    bx0, by0, bx1, by1 = block["bbox"]
-                    if _overlaps_any_table(
-                        (bx0, by0, bx1, by1),
-                        table_bboxes,
-                        _TABLE_OVERLAP_THRESHOLD,
-                    ):
-                        continue
-                    para = _block_to_paragraph(
-                        block,
-                        para_idx,
-                        heading_size_map,
-                        body_font_size,
-                        page_index=page_num,
-                    )
-                    if para is None:
-                        continue
-                    page_items.append((by0, "paragraph", para))
-
-                # Tables from pdfplumber
-                for t in plumber_tables:
-                    tx0, ty0, tx1, ty1 = t.bbox
-                    tbl = _plumber_table_to_dict(
-                        t,
-                        table_idx,
-                        page_index=page_num,
-                        bbox=(tx0, ty0, tx1, ty1),
-                    )
-                    page_items.append((ty0, "table", tbl))
-
-                # Sort by top-y for correct reading order
-                page_items.sort(key=lambda x: x[0])
-
-                for _, kind, data in page_items:
-                    if kind == "paragraph":
-                        data["index"] = para_idx
-                        all_paragraphs.append(data)
-                        document_order.append(
-                            {"type": "paragraph", "index": para_idx}
-                        )
-                        para_idx += 1
-                    else:
-                        data["index"] = table_idx
-                        all_tables.append(data)
-                        document_order.append(
-                            {"type": "table", "index": table_idx}
-                        )
-                        table_idx += 1
+        all_paragraphs, all_tables, document_order = _extract_pages_content(
+            doc=doc,
+            file_bytes=file_bytes,
+            heading_size_map=heading_size_map,
+        )
 
         document_defaults = _extract_document_defaults(doc, all_font_sizes)
 
@@ -344,11 +233,170 @@ def _overlaps_any_table(
     return False
 
 
+def _is_pdf_encrypted(doc: fitz.Document) -> bool:
+    """Handle API differences across PyMuPDF versions."""
+    encrypted = bool(getattr(doc, "is_encrypted", False))
+    needs_pass = bool(getattr(doc, "needs_pass", False))
+    return encrypted or needs_pass
+
+
+def _collect_font_sizes(doc: fitz.Document) -> list[float]:
+    """Collect rounded positive span font sizes from text blocks."""
+    return [
+        round(size, 1)
+        for span in _iter_document_spans(doc, fitz.TEXT_PRESERVE_WHITESPACE)
+        for size in [span.get("size", 0.0)]
+        if size and size > 0
+    ]
+
+
+def _extract_media_items(doc: fitz.Document) -> list[dict[str, Any]]:
+    """Extract and deduplicate PDF images across all pages by xref."""
+    media: list[dict[str, Any]] = []
+    seen_xrefs: set[int] = set()
+    for page_num, page in enumerate(doc):
+        for img_info in page.get_images(full=True):
+            xref: int = img_info[0]
+            if xref in seen_xrefs:
+                continue
+            seen_xrefs.add(xref)
+            item = _extract_image(doc, xref, page_num)
+            if item:
+                media.append(item)
+    return media
+
+
+def _extract_pages_content(
+    doc: fitz.Document,
+    file_bytes: bytes,
+    heading_size_map: dict[float, str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Extract paragraph/table content and document order for all pages."""
+    all_paragraphs: list[dict[str, Any]] = []
+    all_tables: list[dict[str, Any]] = []
+    document_order: list[dict[str, Any]] = []
+    para_idx = 0
+    table_idx = 0
+
+    with pdfplumber.open(BytesIO(file_bytes)) as pdf_reader:
+        for page_num, (fitz_page, plumber_page) in enumerate(zip(doc, pdf_reader.pages)):
+            plumber_tables = _safe_find_tables(plumber_page, page_num)
+            table_bboxes: list[tuple[float, float, float, float]] = [
+                t.bbox for t in plumber_tables
+            ]
+
+            page_items = _build_page_items(
+                fitz_page=fitz_page,
+                page_num=page_num,
+                heading_size_map=heading_size_map,
+                plumber_tables=plumber_tables,
+                table_bboxes=table_bboxes,
+                table_idx_start=table_idx,
+            )
+
+            para_idx, table_idx = _append_page_items(
+                page_items=page_items,
+                para_idx=para_idx,
+                table_idx=table_idx,
+                all_paragraphs=all_paragraphs,
+                all_tables=all_tables,
+                document_order=document_order,
+            )
+
+    return all_paragraphs, all_tables, document_order
+
+
+def _safe_find_tables(plumber_page: Any, page_num: int) -> list[Any]:
+    """Run table detection with bounded parser-related exception handling."""
+    try:
+        return plumber_page.find_tables()
+    except (ValueError, TypeError, AttributeError, KeyError) as exc:
+        logger.debug(
+            "pdfplumber table detection failed on page %d: %s",
+            page_num,
+            exc,
+        )
+        return []
+
+
+def _build_page_items(
+    fitz_page: fitz.Page,
+    page_num: int,
+    heading_size_map: dict[float, str],
+    plumber_tables: list[Any],
+    table_bboxes: list[tuple[float, float, float, float]],
+    table_idx_start: int,
+) -> list[tuple[float, str, dict[str, Any]]]:
+    """Build sorted page items in reading order: paragraphs and tables."""
+    page_items: list[tuple[float, str, dict[str, Any]]] = []
+
+    raw = fitz_page.get_text(
+        "dict",
+        flags=(fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES),
+    )
+    fitz_text_blocks = [
+        b for b in raw.get("blocks", []) if b.get("type") == 0
+    ]
+
+    for block in fitz_text_blocks:
+        bx0, by0, bx1, by1 = block["bbox"]
+        if _overlaps_any_table(
+            (bx0, by0, bx1, by1),
+            table_bboxes,
+            _TABLE_OVERLAP_THRESHOLD,
+        ):
+            continue
+        para = _block_to_paragraph(
+            block,
+            index=0,
+            heading_size_map=heading_size_map,
+            page_index=page_num,
+        )
+        if para is None:
+            continue
+        page_items.append((by0, "paragraph", para))
+
+    for offset, table in enumerate(plumber_tables):
+        tx0, ty0, tx1, ty1 = table.bbox
+        tbl = _plumber_table_to_dict(
+            table,
+            table_idx_start + offset,
+            page_index=page_num,
+            bbox=(tx0, ty0, tx1, ty1),
+        )
+        page_items.append((ty0, "table", tbl))
+
+    page_items.sort(key=lambda item: item[0])
+    return page_items
+
+
+def _append_page_items(
+    page_items: list[tuple[float, str, dict[str, Any]]],
+    para_idx: int,
+    table_idx: int,
+    all_paragraphs: list[dict[str, Any]],
+    all_tables: list[dict[str, Any]],
+    document_order: list[dict[str, Any]],
+) -> tuple[int, int]:
+    """Append sorted page items into global lists and advance indices."""
+    for _, kind, data in page_items:
+        if kind == "paragraph":
+            data["index"] = para_idx
+            all_paragraphs.append(data)
+            document_order.append({"type": "paragraph", "index": para_idx})
+            para_idx += 1
+            continue
+        data["index"] = table_idx
+        all_tables.append(data)
+        document_order.append({"type": "table", "index": table_idx})
+        table_idx += 1
+    return para_idx, table_idx
+
+
 def _block_to_paragraph(
     block: dict[str, Any],
     index: int,
     heading_size_map: dict[float, str],
-    body_font_size: float,
     page_index: int,
 ) -> dict[str, Any] | None:
     """Convert a fitz text block to a paragraph dict.
@@ -485,7 +533,7 @@ def _plumber_table_to_dict(
     """Convert a pdfplumber Table to an ExtractedTable-compatible dict."""
     try:
         raw_rows: list[list[str | None]] = table.extract()
-    except Exception:
+    except (ValueError, TypeError, AttributeError, KeyError):
         raw_rows = []
 
     if not raw_rows:
@@ -569,7 +617,7 @@ def _extract_image(
             "alt_text": None,
             "base64": base64.b64encode(blob).decode("ascii"),
         }
-    except Exception as exc:
+    except (RuntimeError, ValueError, TypeError, KeyError) as exc:
         logger.debug("Failed to extract image xref=%d: %s", xref, exc)
         return None
 
@@ -581,21 +629,7 @@ def _extract_document_defaults(
     body_size = _detect_body_font_size(all_font_sizes)
 
     # Find the most common font name across all pages
-    font_counter: Counter[str] = Counter()
-    try:
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            raw = page.get_text("dict")
-            for block in raw.get("blocks", []):
-                if block.get("type") != 0:
-                    continue
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
-                        fname = span.get("font")
-                        if fname:
-                            font_counter[fname] += 1
-    except Exception:
-        pass
+    font_counter = _collect_font_names(doc)
 
     most_common_font: str | None = (
         font_counter.most_common(1)[0][0] if font_counter else None
@@ -606,3 +640,46 @@ def _extract_document_defaults(
         "font_size_pt": body_size,
         "color_rgb": None,
     }
+
+
+def _collect_font_names(doc: fitz.Document) -> Counter[str]:
+    """Collect per-span font names across the document."""
+    font_counter: Counter[str] = Counter()
+    for span in _iter_document_spans(doc):
+        fname = span.get("font")
+        if fname:
+            font_counter[fname] += 1
+    return font_counter
+
+
+def _iter_document_spans(
+    doc: fitz.Document,
+    flags: int | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield text spans across all pages, skipping unreadable pages."""
+    for page in doc:
+        raw = _safe_get_page_text_dict(page, flags)
+        yield from _iter_spans_from_page_dict(raw)
+
+
+def _safe_get_page_text_dict(
+    page: fitz.Page,
+    flags: int | None = None,
+) -> dict[str, Any]:
+    """Safely read a page text dictionary; returns empty dict on parser errors."""
+    try:
+        if flags is None:
+            return page.get_text("dict")
+        return page.get_text("dict", flags=flags)
+    except (RuntimeError, ValueError, TypeError, KeyError):
+        return {}
+
+
+def _iter_spans_from_page_dict(raw: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Yield spans from text blocks in a fitz page dict."""
+    for block in raw.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                yield span

@@ -59,42 +59,17 @@ class MarkdownExtractionPipeline:
         line_index = 0
 
         while line_index < len(lines):
-            line = lines[line_index]
-            stripped = line.strip()
-
-            if not stripped:
-                line_index += 1
-                continue
-
-            if self._is_table_start(lines, line_index):
-                table_lines, line_index = self._collect_table_lines(
-                    lines, line_index)
-                table_entry = self._build_table_entry(table_lines, table_index)
-                if table_entry:
-                    tables.append(table_entry)
-                    document_order.append(
-                        {"type": "table", "index": table_index})
-                    table_index += 1
-                continue
-
-            # Detect fenced code blocks (``` or ~~~) and collect as a unit
-            if re.match(r"^(`{3,}|~{3,})", stripped):
-                block_lines, line_index = self._collect_code_fence_block(
-                    lines, line_index)
-            else:
-                block_lines, line_index = self._collect_paragraph_block(
-                    lines, line_index, line)
-            paragraph = self._build_paragraph(block_lines, paragraph_index)
-            if not (paragraph.get("text") or "").strip():
-                line_index = line_index  # already advanced
-                continue
-            if include_media:
-                media.extend(self._extract_inline_media(
-                    block_lines, paragraph_index))
-            paragraphs.append(paragraph)
-            document_order.append(
-                {"type": "paragraph", "index": paragraph_index})
-            paragraph_index += 1
+            table_index, paragraph_index, line_index = self._process_line_block(
+                lines=lines,
+                line_index=line_index,
+                table_index=table_index,
+                paragraph_index=paragraph_index,
+                include_media=include_media,
+                tables=tables,
+                paragraphs=paragraphs,
+                media=media,
+                document_order=document_order,
+            )
 
         return {
             "metadata": {
@@ -108,6 +83,102 @@ class MarkdownExtractionPipeline:
             "tables": tables,
             "media": media,
         }
+
+    def _process_line_block(
+        self,
+        lines: list[str],
+        line_index: int,
+        table_index: int,
+        paragraph_index: int,
+        include_media: bool,
+        tables: list[dict[str, Any]],
+        paragraphs: list[dict[str, Any]],
+        media: list[dict[str, Any]],
+        document_order: list[dict[str, Any]],
+    ) -> tuple[int, int, int]:
+        """Process one logical block and return updated indices."""
+        line = lines[line_index]
+        stripped = line.strip()
+
+        if not stripped:
+            return table_index, paragraph_index, line_index + 1
+
+        if self._is_table_start(lines, line_index):
+            return self._process_table_block(
+                lines=lines,
+                line_index=line_index,
+                table_index=table_index,
+                paragraph_index=paragraph_index,
+                tables=tables,
+                document_order=document_order,
+            )
+
+        return self._process_paragraph_block(
+            lines=lines,
+            line_index=line_index,
+            first_line=line,
+            stripped=stripped,
+            table_index=table_index,
+            paragraph_index=paragraph_index,
+            include_media=include_media,
+            paragraphs=paragraphs,
+            media=media,
+            document_order=document_order,
+        )
+
+    def _process_table_block(
+        self,
+        lines: list[str],
+        line_index: int,
+        table_index: int,
+        paragraph_index: int,
+        tables: list[dict[str, Any]],
+        document_order: list[dict[str, Any]],
+    ) -> tuple[int, int, int]:
+        """Parse and append a markdown table block."""
+        table_lines, next_line_index = self._collect_table_lines(
+            lines, line_index)
+        table_entry = self._build_table_entry(table_lines, table_index)
+        if table_entry:
+            tables.append(table_entry)
+            document_order.append({"type": "table", "index": table_index})
+            table_index += 1
+        return table_index, paragraph_index, next_line_index
+
+    def _process_paragraph_block(
+        self,
+        lines: list[str],
+        line_index: int,
+        first_line: str,
+        stripped: str,
+        table_index: int,
+        paragraph_index: int,
+        include_media: bool,
+        paragraphs: list[dict[str, Any]],
+        media: list[dict[str, Any]],
+        document_order: list[dict[str, Any]],
+    ) -> tuple[int, int, int]:
+        """Parse and append a paragraph/code-fence block."""
+        if re.match(r"^(`{3,}|~{3,})", stripped):
+            block_lines, next_line_index = self._collect_code_fence_block(
+                lines, line_index
+            )
+        else:
+            block_lines, next_line_index = self._collect_paragraph_block(
+                lines, line_index, first_line
+            )
+
+        paragraph = self._build_paragraph(block_lines, paragraph_index)
+        if not (paragraph.get("text") or "").strip():
+            return table_index, paragraph_index, next_line_index
+
+        if include_media:
+            media.extend(self._extract_inline_media(
+                block_lines, paragraph_index))
+
+        paragraphs.append(paragraph)
+        document_order.append({"type": "paragraph", "index": paragraph_index})
+        return table_index, paragraph_index + 1, next_line_index
 
     def _collect_table_lines(
         self, lines: list[str], line_index: int
@@ -190,9 +261,8 @@ class MarkdownExtractionPipeline:
             block_lines.append(current)
             line_index += 1
             # Stop after consuming the closing fence line
-            if current.strip() == fence_char or current.strip().startswith(fence_char) and current.strip() == fence_char:
-                break
-            if re.match(r"^" + re.escape(fence_char) + r"\s*$", current.strip()):
+            current_stripped = current.strip()
+            if re.match(r"^" + re.escape(fence_char) + r"\s*$", current_stripped):
                 break
         return block_lines, line_index
 
@@ -216,30 +286,63 @@ class MarkdownExtractionPipeline:
     # ── paragraph builder ────────────────────────────────────────────────────
 
     def _build_paragraph(self, block_lines: list[str], paragraph_index: int) -> dict[str, Any]:
-        heading_level = None
-        style = None
-        is_bullet = False
-        is_numbered = False
-        numbering_format = None
-        list_indent = 0
-        code_fence_language: str | None = None
+        paragraph_data = self._build_paragraph_data(block_lines)
+        raw = paragraph_data["raw"]
+        style = paragraph_data["style"]
+        code_fence_language = paragraph_data["code_fence_language"]
+        is_bullet = paragraph_data["is_bullet"]
+        is_numbered = paragraph_data["is_numbered"]
+        numbering_format = paragraph_data["numbering_format"]
+        list_indent = paragraph_data["list_indent"]
+        runs = paragraph_data["runs"]
 
-        # ── Fenced code block — detect before any stripping ──────────────────
+        list_kind = self._resolve_list_kind(is_bullet, is_numbered)
+        indent_level = (list_indent // 2) if list_indent else 0
+
+        return {
+            "index": paragraph_index,
+            "text": _strip_inline_md(raw),
+            "style": style,
+            "code_fence_language": code_fence_language,
+            "is_bullet": is_bullet,
+            "is_numbered": is_numbered,
+            "list_info": {
+                "kind": list_kind,
+                "numbering_format": numbering_format,
+                "indent_level": indent_level,
+            } if (is_bullet or is_numbered) else None,
+            "numbering_format": numbering_format,
+            "alignment": None,
+            "runs": runs,
+            "source": {"format": "markdown"},
+        }
+
+    def _build_paragraph_data(self, block_lines: list[str]) -> dict[str, Any]:
+        """Return normalized paragraph parts used to build a paragraph payload."""
         first_stripped = block_lines[0].strip() if block_lines else ""
         fence_open_match = re.match(r"^(`{3,}|~{3,})(\S*)", first_stripped)
         if fence_open_match:
-            fence_marker = fence_open_match.group(1)
-            code_fence_language = fence_open_match.group(2) or ""
-            style = "CodeBlock"
-            # Body = all lines between opening and closing fence, verbatim
-            body_lines: list[str] = []
-            for bline in block_lines[1:]:
-                if re.match(r"^" + re.escape(fence_marker) + r"\s*$", bline.strip()):
-                    break
-                body_lines.append(bline)
-            raw = "\n".join(body_lines)
-            # Store as a single verbatim run — NO inline parsing so that
-            # underscores and other special chars in code are never touched.
+            return self._build_code_fence_paragraph_data(block_lines, fence_open_match)
+        return self._build_regular_paragraph_data(block_lines)
+
+    def _build_code_fence_paragraph_data(
+        self,
+        block_lines: list[str],
+        fence_open_match: re.Match,
+    ) -> dict[str, Any]:
+        """Build paragraph data for fenced code blocks."""
+        fence_marker = fence_open_match.group(1)
+        code_fence_language = fence_open_match.group(2) or ""
+
+        body_lines: list[str] = []
+        for bline in block_lines[1:]:
+            if re.match(r"^" + re.escape(fence_marker) + r"\s*$", bline.strip()):
+                break
+            body_lines.append(bline)
+
+        raw = "\n".join(body_lines)
+        runs = []
+        if raw.strip():
             runs = [{
                 "index": 0,
                 "text": raw,
@@ -253,62 +356,92 @@ class MarkdownExtractionPipeline:
                 "hyperlink_url": None,
                 "embedded_media": [],
                 "code": True,
-            }] if raw.strip() else []
-        else:
-            # ── Measure indentation from the ORIGINAL first line before stripping
-            first_line_raw = block_lines[0] if block_lines else ""
-            raw = "\n".join(block_lines).strip()
-
-            heading_match = re.match(r"^\s{0,3}(#{1,6})\s+(.*)$", raw)
-            if heading_match:
-                heading_level = len(heading_match.group(1))
-                raw = heading_match.group(2).strip()
-                style = f"Heading {heading_level}"
-            else:
-                bullet_match = re.match(r"^(\s*)[-*+]\s+(.*)$", first_line_raw)
-                number_match = re.match(
-                    r"^(\s*)(\d+[.)])\s+(.*)$", first_line_raw)
-                if bullet_match:
-                    is_bullet = True
-                    numbering_format = "bullet"
-                    list_indent = len(bullet_match.group(1))
-                    # raw text = stripped content after the list marker
-                    raw = re.match(r"^\s*[-*+]\s+(.*)",
-                                   raw, re.DOTALL).group(1).strip()
-                elif number_match:
-                    is_numbered = True
-                    numbering_format = number_match.group(2)
-                    list_indent = len(number_match.group(1))
-                    raw = re.match(r"^\s*\d+[.)]\s+(.*)",
-                                   raw, re.DOTALL).group(1).strip()
-
-            # Build inline-formatted runs from the text
-            runs = self._parse_inline_runs(raw)
-
-        if is_bullet:
-            list_kind: str | None = "bullet"
-        elif is_numbered:
-            list_kind = "numbered"
-        else:
-            list_kind = None
+            }]
 
         return {
-            "index": paragraph_index,
-            "text": _strip_inline_md(raw),
-            "style": style,
+            "raw": raw,
+            "style": "CodeBlock",
             "code_fence_language": code_fence_language,
+            "is_bullet": False,
+            "is_numbered": False,
+            "numbering_format": None,
+            "list_indent": 0,
+            "runs": runs,
+        }
+
+    def _build_regular_paragraph_data(self, block_lines: list[str]) -> dict[str, Any]:
+        """Build paragraph data for regular markdown lines."""
+        first_line_raw = block_lines[0] if block_lines else ""
+        raw = "\n".join(block_lines).strip()
+
+        style: str | None = None
+        is_bullet = False
+        is_numbered = False
+        numbering_format: str | None = None
+        list_indent = 0
+
+        heading_match = re.match(r"^\s{0,3}(#{1,6})\s+(.*)$", raw)
+        if heading_match:
+            heading_level = len(heading_match.group(1))
+            raw = heading_match.group(2).strip()
+            style = f"Heading {heading_level}"
+        else:
+            is_bullet, is_numbered, numbering_format, list_indent, raw = (
+                self._extract_list_metadata(first_line_raw, raw)
+            )
+
+        runs = self._parse_inline_runs(raw)
+        return {
+            "raw": raw,
+            "style": style,
+            "code_fence_language": None,
             "is_bullet": is_bullet,
             "is_numbered": is_numbered,
-            "list_info": {
-                "kind": list_kind,
-                "numbering_format": numbering_format,
-                "indent_level": list_indent // 2 if list_indent else 0,
-            } if (is_bullet or is_numbered) else None,
             "numbering_format": numbering_format,
-            "alignment": None,
+            "list_indent": list_indent,
             "runs": runs,
-            "source": {"format": "markdown"},
         }
+
+    def _extract_list_metadata(
+        self,
+        first_line_raw: str,
+        raw: str,
+    ) -> tuple[bool, bool, str | None, int, str]:
+        """Return list metadata and normalized list text for a block."""
+        bullet_match = re.match(r"^(\s*)[-*+]\s+(.*)$", first_line_raw)
+        number_match = re.match(r"^(\s*)(\d+[.)])\s+(.*)$", first_line_raw)
+
+        if bullet_match:
+            stripped_match = re.match(r"^\s*[-*+]\s+(.*)", raw, re.DOTALL)
+            list_text = stripped_match.group(
+                1).strip() if stripped_match else raw
+            return True, False, "bullet", len(bullet_match.group(1)), list_text
+
+        if number_match:
+            stripped_match = re.match(r"^\s*\d+[.)]\s+(.*)", raw, re.DOTALL)
+            list_text = stripped_match.group(
+                1).strip() if stripped_match else raw
+            return (
+                False,
+                True,
+                number_match.group(2),
+                len(number_match.group(1)),
+                list_text,
+            )
+
+        return False, False, None, 0, raw
+
+    def _resolve_list_kind(
+        self,
+        is_bullet: bool,
+        is_numbered: bool,
+    ) -> str | None:
+        """Resolve list kind value used in list_info."""
+        if is_bullet:
+            return "bullet"
+        if is_numbered:
+            return "numbered"
+        return None
 
     def _classify_match(
         self, m: re.Match

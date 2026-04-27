@@ -11,7 +11,6 @@ from dataclasses import dataclass
 
 from app.schemas.temp_doc_schema import (
     ExtractedData,
-    ExtractedParagraph,
     ExtractedPptData,
     ExtractedTable,
 )

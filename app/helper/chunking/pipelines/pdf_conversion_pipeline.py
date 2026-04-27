@@ -19,6 +19,7 @@ class PdfConversionPipeline:
 
     def run(self, file_bytes: bytes, include_media: bool = True) -> dict[str, Any]:
         """Convert PDF to DOCX and extract."""
+        _ = include_media  # Retained for interface compatibility.
         try:
             # pdf2docx expects file paths, so use a temp workspace.
             with tempfile.TemporaryDirectory(prefix="temp-doc-") as temp_dir:
@@ -41,10 +42,7 @@ class PdfConversionPipeline:
                 docx_bytes = docx_path.read_bytes()
 
             # Extract from DOCX
-            return self.docx_pipeline.run(
-                docx_bytes,
-                include_media=include_media,
-            )
+            return self.docx_pipeline.run(docx_bytes)
 
         except Exception as e:
             self.logger.error("PDF conversion failed: %s", e)
