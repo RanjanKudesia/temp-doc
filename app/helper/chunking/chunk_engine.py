@@ -5,15 +5,19 @@ Does not import from helper.chunks service API.
 """
 
 from __future__ import annotations
-
-import re
-from dataclasses import dataclass
-
 from app.schemas.temp_doc_schema import (
     ExtractedData,
     ExtractedPptData,
     ExtractedTable,
 )
+
+import logging
+import re
+import time
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
 
 _HEADING_RE = re.compile(r"heading\s*([1-6])", re.IGNORECASE)
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
@@ -44,20 +48,54 @@ class ChunkEngine:
 
     def chunk_docx(self, extracted_data: ExtractedData) -> list[str]:
         """Chunk DOCX/PDF/HTML/Markdown/TXT extracted data into section-aware chunks."""
+        t0 = time.perf_counter()
+        logger.info(
+            "[chunk_engine] chunk_docx started | paragraphs=%d | tables=%d",
+            len(extracted_data.paragraphs),
+            len(extracted_data.tables),
+        )
+
+        t1 = time.perf_counter()
         units = self._build_docx_units(extracted_data)
+        logger.info(
+            "[chunk_engine] _build_docx_units done | units=%d | elapsed=%dms",
+            len(units), round((time.perf_counter() - t1) * 1000),
+        )
+
         has_heading_units = any(unit.heading for unit in units)
-
         if has_heading_units:
+            t2 = time.perf_counter()
             units = self._absorb_heading_only_units(units)
+            logger.info(
+                "[chunk_engine] _absorb_heading_only_units done | units=%d | elapsed=%dms",
+                len(units), round((time.perf_counter() - t2) * 1000),
+            )
 
+        t3 = time.perf_counter()
         chunks: list[str] = []
         for unit in units:
             chunks.extend(self._split_unit(unit))
+        logger.info(
+            "[chunk_engine] _split_unit (all units) done | raw_chunks=%d | elapsed=%dms",
+            len(chunks), round((time.perf_counter() - t3) * 1000),
+        )
 
-        return self._merge_short_chunks(chunks)
+        result = self._merge_short_chunks(chunks)
+        logger.info(
+            "[chunk_engine] chunk_docx done | final_chunks=%d | total_elapsed=%dms",
+            len(result), round((time.perf_counter() - t0) * 1000),
+        )
+        return result
 
     def chunk_pptx(self, extracted_data: ExtractedPptData) -> list[str]:
         """Chunk PPTX extracted data: one chunk per slide, split if oversized."""
+        t0 = time.perf_counter()
+        slide_count = len(extracted_data.slides)
+        logger.info(
+            "[chunk_engine] chunk_pptx started | slides=%d | paragraphs=%d",
+            slide_count, len(extracted_data.paragraphs),
+        )
+
         paragraph_map: dict[int, dict] = {
             p.index: {f: getattr(p, f, None) for f in _PARAGRAPH_FIELDS}
             for p in extracted_data.paragraphs
@@ -71,11 +109,19 @@ class ChunkEngine:
                 (slide.get("index") or 0) + 1)
             title = self._clean_text(slide.get("title"))
             header = f"Slide {slide_num}: {title}" if title else f"Slide {slide_num}"
+            logger.debug(
+                "[chunk_engine] Slide %s | parts=%d", slide_num, len(parts)
+            )
 
             unit = _ChunkUnit(heading=header, parts=parts)
             chunks.extend(self._split_unit(unit))
 
-        return self._merge_short_chunks(chunks)
+        result = self._merge_short_chunks(chunks)
+        logger.info(
+            "[chunk_engine] chunk_pptx done | final_chunks=%d | total_elapsed=%dms",
+            len(result), round((time.perf_counter() - t0) * 1000),
+        )
+        return result
 
     # ── Slide helpers ─────────────────────────────────────────────────────────
 

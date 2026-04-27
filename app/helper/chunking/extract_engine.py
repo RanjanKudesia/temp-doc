@@ -8,6 +8,7 @@ Each pipeline is a stateless class; one instance per process is reused.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from app.schemas.temp_doc_schema import ExtractedData, ExtractedPptData
@@ -60,29 +61,55 @@ def extract_bytes(
         ValueError: If the file is invalid or the extension is unsupported.
     """
     ext = extension.lower().lstrip(".")
+    logger.info(
+        "[extract_engine] Starting extraction | ext=.%s | file_size=%d bytes", ext, len(file_bytes))
+    t0 = time.perf_counter()
 
     if ext == "docx":
+        logger.info("[extract_engine] Running DOCX pipeline ...")
         raw: dict[str, Any] = _docx.run(file_bytes)
-        return ExtractedData.model_validate(raw), "docx"
+        raw["media"] = []
+        result = ExtractedData.model_validate(raw), "docx"
 
-    if ext == "pdf":
-        raw = _pdf.run(file_bytes)
-        return ExtractedData.model_validate(raw), "pdf"
+    elif ext == "pdf":
+        logger.info("[extract_engine] Running PDF pipeline ...")
+        raw = _pdf.run(file_bytes, include_media=False)
+        raw["media"] = []
+        result = ExtractedData.model_validate(raw), "pdf"
 
-    if ext in ("ppt", "pptx"):
-        raw = _ppt.run(file_bytes)
-        return ExtractedPptData.model_validate(raw), "pptx"
+    elif ext in ("ppt", "pptx"):
+        logger.info("[extract_engine] Running PPT pipeline ...")
+        raw = _ppt.run(file_bytes, include_media=False)
+        raw["media"] = []
+        result = ExtractedPptData.model_validate(raw), "pptx"
 
-    if ext in ("html", "htm"):
-        raw = _html.run(file_bytes)
-        return ExtractedData.model_validate(raw), "html"
+    elif ext in ("html", "htm"):
+        logger.info("[extract_engine] Running HTML pipeline ...")
+        raw = _html.run(file_bytes, include_media=False)
+        raw["media"] = []
+        result = ExtractedData.model_validate(raw), "html"
 
-    if ext in ("md", "markdown"):
-        raw = _markdown.run(file_bytes)
-        return ExtractedData.model_validate(raw), "markdown"
+    elif ext in ("md", "markdown"):
+        logger.info("[extract_engine] Running Markdown pipeline ...")
+        raw = _markdown.run(file_bytes, include_media=False)
+        raw["media"] = []
+        result = ExtractedData.model_validate(raw), "markdown"
 
-    if ext == "txt":
-        raw = _text.run(file_bytes)
-        return ExtractedData.model_validate(raw), "text"
+    elif ext == "txt":
+        logger.info("[extract_engine] Running TXT pipeline ...")
+        raw = _text.run(file_bytes, include_media=False)
+        raw["media"] = []
+        result = ExtractedData.model_validate(raw), "text"
 
-    raise ValueError(f"Unsupported extension: .{ext}")
+    else:
+        raise ValueError(f"Unsupported extension: .{ext}")
+
+    elapsed_ms = round((time.perf_counter() - t0) * 1000)
+    extracted_data, norm_ext = result
+    para_count = len(getattr(extracted_data, "paragraphs", []))
+    table_count = len(getattr(extracted_data, "tables", []))
+    logger.info(
+        "[extract_engine] Extraction done | ext=.%s | elapsed=%dms | paragraphs=%d | tables=%d",
+        norm_ext, elapsed_ms, para_count, table_count,
+    )
+    return result

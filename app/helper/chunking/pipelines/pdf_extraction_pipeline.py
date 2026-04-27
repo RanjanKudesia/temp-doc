@@ -22,11 +22,12 @@ Strategy
 from __future__ import annotations
 
 import base64
-import json
 import logging
+import os
 import re
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from typing import Any, Iterator
 
@@ -71,6 +72,16 @@ _HEADING_LEVELS: list[str] = [
     "Heading 4", "Heading 5", "Heading 6",
 ]
 
+# Number of pages sampled for font-size / heading heuristics (Pass 1).
+# Sampling the first N pages is statistically sufficient for uniform docs and
+# avoids a full document scan on large PDFs.
+_FONT_SAMPLE_PAGES: int = 50
+
+# Worker threads for parallel page extraction (Pass 3).
+# Each thread opens its own fitz + pdfplumber instance (fitz is NOT thread-safe
+# with shared Document objects).
+_MAX_WORKERS: int = min(8, (os.cpu_count() or 4))
+
 
 # ── Pipeline class ────────────────────────────────────────────────────────────
 
@@ -112,19 +123,16 @@ class PdfExtractionPipeline:
                 "PDF is password-protected. Provide an unlocked PDF."
             )
 
-        # ── Scanned PDF detection ────────────────────────────────────────────
-        total_chars = sum(
-            len(page.get_text("text").strip())
-            for page in doc
-        )
-        if total_chars < _MIN_TEXT_CHARS:
-            doc.close()
-            logger.info(
-                "PDF has very little text (%d chars). "
-                "Falling back to pdf2docx conversion.",
-                total_chars,
-            )
-            return self._fallback.run(file_bytes, include_media=include_media)
+        # ── Scanned PDF detection is merged into Pass 1 (see _extract_native) ──
+        # NOTE: Fallback disabled — native extraction only (for testing).
+        # if total_chars < _MIN_TEXT_CHARS:
+        #     doc.close()
+        #     logger.info(
+        #         "PDF has very little text (%d chars). "
+        #         "Falling back to pdf2docx conversion.",
+        #         total_chars,
+        #     )
+        #     return self._fallback.run(file_bytes, include_media=include_media)
 
         # ── Native extraction ────────────────────────────────────────────────
         try:
@@ -133,14 +141,11 @@ class PdfExtractionPipeline:
             doc.close()
 
         elapsed_ms = round((time.perf_counter() - t0) * 1000)
-        response_size_bytes = len(json.dumps(result).encode("utf-8"))
         logger.info(
             "PDF extraction complete",
             extra={
                 "elapsed_ms": elapsed_ms,
                 "elapsed_s": round(elapsed_ms / 1000, 3),
-                "response_size_bytes": response_size_bytes,
-                "response_size_kb": round(response_size_bytes / 1024, 2),
                 "paragraphs_extracted": len(result.get("paragraphs", [])),
                 "tables_extracted": len(result.get("tables", [])),
                 "media_extracted": len(result.get("media", [])),
@@ -158,26 +163,61 @@ class PdfExtractionPipeline:
         include_media: bool,
     ) -> dict[str, Any]:
         """Core extraction: per-page paragraphs + tables + images."""
+        total_pages = doc.page_count
+        logger.info(
+            "[pdf_pipeline] _extract_native started | pages=%d", total_pages)
 
-        # ── Pass 1: heading heuristic setup ─────────────────────────────────
-        all_font_sizes = _collect_font_sizes(doc)
+        # ── Pass 1: font sizes + heading map + scanned-PDF check ────────────
+        # Single pass over first _FONT_SAMPLE_PAGES pages — collects font sizes
+        # for heading detection and counts span text chars as a scanned-PDF signal.
+        t1 = time.perf_counter()
+        sample_pages = min(_FONT_SAMPLE_PAGES, doc.page_count)
+        all_font_sizes: list[float] = []
+        sampled_chars: int = 0
+        for span in _iter_document_spans(doc, fitz.TEXT_PRESERVE_WHITESPACE, max_pages=sample_pages):
+            size = span.get("size", 0.0)
+            if size and size > 0:
+                all_font_sizes.append(round(size, 1))
+            sampled_chars += len(span.get("text", ""))
         body_font_size = _detect_body_font_size(all_font_sizes)
         heading_size_map = _build_heading_size_map(
             all_font_sizes, body_font_size)
+        logger.info(
+            "[pdf_pipeline] Pass 1 done | sampled_pages=%d | unique_sizes=%d | "
+            "body_size=%.1f | heading_levels=%d | sampled_chars=%d | elapsed=%dms",
+            sample_pages, len(set(all_font_sizes)), body_font_size,
+            len(heading_size_map), sampled_chars,
+            round((time.perf_counter() - t1) * 1000),
+        )
 
         # ── Pass 2: images ───────────────────────────────────────────────────
         media: list[dict[str, Any]] = []
         if include_media:
+            t2 = time.perf_counter()
             media = _extract_media_items(doc)
+            logger.info(
+                "[pdf_pipeline] Pass 2 (media extraction) done | images=%d | elapsed=%dms",
+                len(media), round((time.perf_counter() - t2) * 1000),
+            )
+        else:
+            logger.info(
+                "[pdf_pipeline] Pass 2 (media) skipped (include_media=False)")
 
         # ── Pass 3: per-page paragraph + table extraction ───────────────────
+        t3 = time.perf_counter()
         all_paragraphs, all_tables, document_order = _extract_pages_content(
             doc=doc,
             file_bytes=file_bytes,
             heading_size_map=heading_size_map,
         )
+        logger.info(
+            "[pdf_pipeline] Pass 3 (page content) done | "
+            "paragraphs=%d | tables=%d | elapsed=%dms",
+            len(all_paragraphs), len(all_tables),
+            round((time.perf_counter() - t3) * 1000),
+        )
 
-        document_defaults = _extract_document_defaults(doc, all_font_sizes)
+        document_defaults = _extract_document_defaults(all_font_sizes)
 
         return {
             "document_order": document_order,
@@ -240,16 +280,6 @@ def _is_pdf_encrypted(doc: fitz.Document) -> bool:
     return encrypted or needs_pass
 
 
-def _collect_font_sizes(doc: fitz.Document) -> list[float]:
-    """Collect rounded positive span font sizes from text blocks."""
-    return [
-        round(size, 1)
-        for span in _iter_document_spans(doc, fitz.TEXT_PRESERVE_WHITESPACE)
-        for size in [span.get("size", 0.0)]
-        if size and size > 0
-    ]
-
-
 def _extract_media_items(doc: fitz.Document) -> list[dict[str, Any]]:
     """Extract and deduplicate PDF images across all pages by xref."""
     media: list[dict[str, Any]] = []
@@ -266,41 +296,98 @@ def _extract_media_items(doc: fitz.Document) -> list[dict[str, Any]]:
     return media
 
 
+def _process_page_batch(
+    file_bytes: bytes,
+    page_nums: list[int],
+    heading_size_map: dict[float, str],
+) -> list[tuple[int, list[tuple[float, str, dict[str, Any]]]]]:
+    """Process a batch of pages in a worker thread.
+
+    Opens its own fitz.Document and pdfplumber instance — fitz is NOT
+    thread-safe with a shared Document, so each worker must own its doc.
+    Returns list of (page_num, page_items).
+    """
+    batch_results: list[tuple[int,
+                              list[tuple[float, str, dict[str, Any]]]]] = []
+    thread_doc = fitz.open(stream=file_bytes, filetype="pdf")
+    try:
+        with pdfplumber.open(BytesIO(file_bytes)) as plumber_doc:
+            for page_num in page_nums:
+                fitz_page = thread_doc[page_num]
+                plumber_page = plumber_doc.pages[page_num]
+                plumber_tables = _safe_find_tables(plumber_page, page_num)
+                table_bboxes: list[tuple[float, float, float, float]] = [
+                    t.bbox for t in plumber_tables
+                ]
+                page_items = _build_page_items(
+                    fitz_page=fitz_page,
+                    page_num=page_num,
+                    heading_size_map=heading_size_map,
+                    plumber_tables=plumber_tables,
+                    table_bboxes=table_bboxes,
+                    table_idx_start=0,  # indices are reassigned during assembly
+                )
+                batch_results.append((page_num, page_items))
+    finally:
+        thread_doc.close()
+    return batch_results
+
+
 def _extract_pages_content(
     doc: fitz.Document,
     file_bytes: bytes,
     heading_size_map: dict[float, str],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Extract paragraph/table content and document order for all pages."""
+    """Extract paragraph/table content and document order — parallel page processing."""
+    total_pages = doc.page_count
+    log_every = max(1, total_pages // 10)
+
+    # Distribute pages evenly across workers
+    all_page_nums = list(range(total_pages))
+    batch_size = max(1, (total_pages + _MAX_WORKERS - 1) // _MAX_WORKERS)
+    batches = [
+        all_page_nums[i: i + batch_size]
+        for i in range(0, total_pages, batch_size)
+    ]
+    actual_workers = min(_MAX_WORKERS, len(batches))
+    logger.info(
+        "[pdf_pipeline] Parallel page extraction | workers=%d | batches=%d | pages_per_batch~=%d",
+        actual_workers, len(batches), batch_size,
+    )
+
+    # Run workers — each opens its own fitz + pdfplumber instance
+    page_results: dict[int, list[tuple[float, str, dict[str, Any]]]] = {}
+    with ThreadPoolExecutor(max_workers=actual_workers) as executor:
+        futures = {
+            executor.submit(_process_page_batch, file_bytes, batch, heading_size_map): batch
+            for batch in batches
+        }
+        for future in as_completed(futures):
+            for page_num, page_items in future.result():
+                page_results[page_num] = page_items
+
+    # Reassemble in page order and assign final sequential indices
     all_paragraphs: list[dict[str, Any]] = []
     all_tables: list[dict[str, Any]] = []
     document_order: list[dict[str, Any]] = []
     para_idx = 0
     table_idx = 0
 
-    with pdfplumber.open(BytesIO(file_bytes)) as pdf_reader:
-        for page_num, (fitz_page, plumber_page) in enumerate(zip(doc, pdf_reader.pages)):
-            plumber_tables = _safe_find_tables(plumber_page, page_num)
-            table_bboxes: list[tuple[float, float, float, float]] = [
-                t.bbox for t in plumber_tables
-            ]
-
-            page_items = _build_page_items(
-                fitz_page=fitz_page,
-                page_num=page_num,
-                heading_size_map=heading_size_map,
-                plumber_tables=plumber_tables,
-                table_bboxes=table_bboxes,
-                table_idx_start=table_idx,
-            )
-
-            para_idx, table_idx = _append_page_items(
-                page_items=page_items,
-                para_idx=para_idx,
-                table_idx=table_idx,
-                all_paragraphs=all_paragraphs,
-                all_tables=all_tables,
-                document_order=document_order,
+    for page_num in range(total_pages):
+        page_items = page_results.get(page_num, [])
+        para_idx, table_idx = _append_page_items(
+            page_items=page_items,
+            para_idx=para_idx,
+            table_idx=table_idx,
+            all_paragraphs=all_paragraphs,
+            all_tables=all_tables,
+            document_order=document_order,
+        )
+        if (page_num + 1) % log_every == 0 or page_num == total_pages - 1:
+            logger.info(
+                "[pdf_pipeline] Page %d/%d assembled | "
+                "total_paragraphs=%d | total_tables=%d",
+                page_num + 1, total_pages, para_idx, table_idx,
             )
 
     return all_paragraphs, all_tables, document_order
@@ -622,42 +709,27 @@ def _extract_image(
         return None
 
 
-def _extract_document_defaults(
-    doc: fitz.Document, all_font_sizes: list[float]
-) -> dict[str, Any]:
-    """Build document_defaults from PDF metadata + font analysis."""
+def _extract_document_defaults(all_font_sizes: list[float]) -> dict[str, Any]:
+    """Build document_defaults from font analysis."""
     body_size = _detect_body_font_size(all_font_sizes)
-
-    # Find the most common font name across all pages
-    font_counter = _collect_font_names(doc)
-
-    most_common_font: str | None = (
-        font_counter.most_common(1)[0][0] if font_counter else None
-    )
-
     return {
-        "font_name": most_common_font,
+        "font_name": None,
         "font_size_pt": body_size,
         "color_rgb": None,
     }
 
 
-def _collect_font_names(doc: fitz.Document) -> Counter[str]:
-    """Collect per-span font names across the document."""
-    font_counter: Counter[str] = Counter()
-    for span in _iter_document_spans(doc):
-        fname = span.get("font")
-        if fname:
-            font_counter[fname] += 1
-    return font_counter
-
-
 def _iter_document_spans(
     doc: fitz.Document,
     flags: int | None = None,
+    max_pages: int | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Yield text spans across all pages, skipping unreadable pages."""
-    for page in doc:
+    """Yield text spans across pages, skipping unreadable pages.
+
+    If max_pages is set, only the first N pages are iterated.
+    """
+    pages = list(doc)[:max_pages] if max_pages is not None else doc
+    for page in pages:
         raw = _safe_get_page_text_dict(page, flags)
         yield from _iter_spans_from_page_dict(raw)
 
